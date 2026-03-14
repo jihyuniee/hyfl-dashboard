@@ -6,13 +6,8 @@ from datetime import datetime, timedelta
 import gspread
 from google.oauth2.service_account import Credentials
 
-# ── 페이지 설정 ──────────────────────────────────────
-st.set_page_config(
-    page_title="한영외고 야자 대시보드",
-    page_icon="🏫",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+st.set_page_config(page_title="한영외고 야자 대시보드", page_icon="🏫", layout="wide",
+                   initial_sidebar_state="expanded")
 
 st.markdown("""
 <style>
@@ -27,579 +22,557 @@ st.markdown("""
         font-size: 2rem; font-weight: 700; color: #1d3a6e;
     }
     .section-title {
-        font-size: 1.2rem; font-weight: 700; color: #1d3a6e;
-        margin: 24px 0 12px; padding-bottom: 8px;
+        font-size: 1.15rem; font-weight: 700; color: #1d3a6e;
+        margin: 20px 0 10px; padding-bottom: 6px;
         border-bottom: 2px solid #2d7ef7;
     }
-    .empty-state {
-        text-align: center; padding: 40px 20px;
-        color: #9ca3af; background: #f9fafb;
-        border-radius: 12px; margin: 12px 0;
+    .top3-card {
+        background: linear-gradient(135deg, #eff4ff, #f5f0ff);
+        border: 1px solid #dde8ff; border-radius: 16px;
+        padding: 14px 18px; margin-bottom: 10px;
     }
-    .stTabs [data-baseweb="tab-list"] { gap: 8px; }
-    .stTabs [data-baseweb="tab"] { border-radius: 8px; padding: 6px 16px; font-weight: 600; }
-    [data-testid="stSidebar"] { background: #f8faff; }
+    .gold   { border-left: 4px solid #f59e0b; }
+    .silver { border-left: 4px solid #94a3b8; }
+    .bronze { border-left: 4px solid #b45309; }
+    .empty-state {
+        text-align: center; padding: 32px 20px;
+        color: #9ca3af; background: #f9fafb;
+        border-radius: 12px; margin: 8px 0; font-size: 0.9rem;
+    }
     #MainMenu, footer, header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── 유틸 함수 ────────────────────────────────────────
-def empty_state(msg="해당 기간에 데이터가 없습니다."):
-    st.markdown(f"""
-    <div class="empty-state">
-        <div style="font-size:2rem; margin-bottom:8px">📭</div>
-        <p style="margin:0; font-size:0.95rem">{msg}</p>
-    </div>""", unsafe_allow_html=True)
+# ── 유틸 ─────────────────────────────────────────────
+def empty_state(msg="데이터가 없습니다."):
+    st.markdown(f'<div class="empty-state">📭 {msg}</div>', unsafe_allow_html=True)
 
-def safe_nunique(series):
-    try: return series.nunique()
-    except: return 0
+def safe_int(v):
+    try: return int(float(v))
+    except: return None
+
+def is_valid(v):
+    return v is not None and str(v) not in ['미지정', '', 'nan', 'None']
 
 def get_week_range(offset=0):
-    today  = datetime.now().date()
-    monday = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
-    return monday, monday + timedelta(days=6)
+    today = datetime.now().date()
+    mon   = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
+    return mon, mon + timedelta(days=6)
 
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets.readonly",
-    "https://www.googleapis.com/auth/drive.readonly",
-]
+def make_label(g, k):
+    gi, ki = safe_int(g), safe_int(k)
+    if gi and ki: return f"{gi}-{ki}반"
+    return "미확인"
+
+DEPT_ORDER = ['중국어과','일본어과','독일어과','프랑스어과','스페인어과']
+MEDALS = ['🥇','🥈','🥉']
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly",
+          "https://www.googleapis.com/auth/drive.readonly"]
 
 @st.cache_data(ttl=300)
-def load_data(sheet_key: str, worksheet_name: str) -> pd.DataFrame:
+def load_data(key, ws_name):
     try:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"], scopes=SCOPES)
-        gc   = gspread.authorize(creds)
-        ws   = gc.open_by_key(sheet_key).worksheet(worksheet_name)
-        data = ws.get_all_records()
-        if not data:
-            return pd.DataFrame()
-
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+        ws    = gspread.authorize(creds).open_by_key(key).worksheet(ws_name)
+        data  = ws.get_all_records()
+        if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         df.columns = df.columns.str.strip()
-
         if '날짜' in df.columns:
             df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
             df = df.dropna(subset=['날짜'])
             df['날짜'] = df['날짜'].dt.normalize()
-            day_map = {0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'}
-            df['요일'] = df['날짜'].dt.dayofweek.map(day_map)
-
+            df['요일'] = df['날짜'].dt.dayofweek.map({0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'})
         for col in ['학년','반','번호']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
-
         def get_dept(k):
             try:
                 n = int(k)
-                if n <= 2:  return '중국어과'
-                if n <= 4:  return '일본어과'
-                if n <= 6:  return '독일어과'
-                if n <= 8:  return '프랑스어과'
-                if n <= 10: return '스페인어과'
+                if n<=2: return '중국어과'
+                if n<=4: return '일본어과'
+                if n<=6: return '독일어과'
+                if n<=8: return '프랑스어과'
+                if n<=10: return '스페인어과'
             except: pass
             return '기타'
-
         if '반' in df.columns:
             df['어학과'] = df['반'].apply(get_dept)
-
         return df
-
     except Exception as e:
         st.error(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-def filter_df(df, start, end):
-    if df.empty or '날짜' not in df.columns:
-        return df
-    try:
-        mask = (df['날짜'] >= pd.Timestamp(start)) & (df['날짜'] <= pd.Timestamp(end))
-        return df[mask].copy()
-    except:
-        return df.copy()
+def filter_valid(df):
+    """미지정/NaN 학년·반 제거"""
+    if df.empty: return df
+    d = df.copy()
+    for col in ['학년','반']:
+        if col in d.columns:
+            d = d[d[col].notna()]
+            d = d[d[col].astype(str).str.strip().isin(['미지정','']) == False]
+    return d
 
-# ── 사이드바 ─────────────────────────────────────────
+def filter_period(df, start, end):
+    if df.empty or '날짜' not in df.columns: return df
+    return df[(df['날짜']>=pd.Timestamp(start)) & (df['날짜']<=pd.Timestamp(end))].copy()
+
+# ── 사이드바 ──────────────────────────────────────────
 with st.sidebar:
     st.markdown("### 🏫 한영외고 야자 대시보드")
     st.markdown("---")
-
     st.markdown("#### 📊 데이터 연결")
-    sheet_key = st.text_input(
-        "Google Sheet Key",
-        value=st.session_state.get("sheet_key", ""),
-        placeholder="스프레드시트 ID 입력",
-    )
-    worksheet_name = st.text_input(
-        "워크시트 이름",
-        value=st.session_state.get("worksheet_name", "출석기록"),
-    )
+    sheet_key = st.text_input("Google Sheet Key",
+        value=st.session_state.get("sheet_key",""), placeholder="스프레드시트 ID")
+    ws_name = st.text_input("워크시트 이름",
+        value=st.session_state.get("ws_name","출석기록"))
     if sheet_key:
-        st.session_state["sheet_key"]      = sheet_key
-        st.session_state["worksheet_name"] = worksheet_name
+        st.session_state["sheet_key"] = sheet_key
+        st.session_state["ws_name"]   = ws_name
 
     st.markdown("---")
     st.markdown("#### 📅 기간 설정")
-
     today = datetime.now().date()
-
-    # ── 빠른 기간 버튼 (session_state로 날짜 제어) ──
     if "date_start" not in st.session_state:
         st.session_state.date_start = today - timedelta(days=today.weekday())
     if "date_end" not in st.session_state:
         st.session_state.date_end = today
 
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("이번 주", use_container_width=True):
-            s, e = get_week_range(0)
-            st.session_state.date_start = s
-            st.session_state.date_end   = e
-        if st.button("지난 주", use_container_width=True):
-            s, e = get_week_range(-1)
-            st.session_state.date_start = s
-            st.session_state.date_end   = e
-    with col2:
-        if st.button("이번 달", use_container_width=True):
-            st.session_state.date_start = today.replace(day=1)
-            st.session_state.date_end   = today
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("이번 주",  use_container_width=True):
+            s,e = get_week_range(0);  st.session_state.date_start=s; st.session_state.date_end=e
+        if st.button("지난 주",  use_container_width=True):
+            s,e = get_week_range(-1); st.session_state.date_start=s; st.session_state.date_end=e
+    with c2:
+        if st.button("이번 달",  use_container_width=True):
+            st.session_state.date_start=today.replace(day=1); st.session_state.date_end=today
         if st.button("전체 기간", use_container_width=True):
-            st.session_state.date_start = today.replace(year=today.year-1)
-            st.session_state.date_end   = today
+            st.session_state.date_start=today.replace(year=today.year-1); st.session_state.date_end=today
 
-    # 날짜 직접 입력 (버튼 클릭 시 자동 반영)
-    date_range = st.date_input(
-        "직접 설정",
-        value=(st.session_state.date_start, st.session_state.date_end),
-        format="YYYY/MM/DD",
-        key="date_picker",
-    )
-
-    # date_input 직접 변경 시 session_state 동기화
-    if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-        start_date, end_date = date_range
-        st.session_state.date_start = start_date
-        st.session_state.date_end   = end_date
-    elif isinstance(date_range, (list, tuple)) and len(date_range) == 1:
-        # 시작일만 선택된 상태 (아직 종료일 미선택)
-        start_date = date_range[0]
-        end_date   = date_range[0]
+    dr = st.date_input("직접 설정",
+        value=(st.session_state.date_start, st.session_state.date_end), format="YYYY/MM/DD")
+    if isinstance(dr,(list,tuple)) and len(dr)==2:
+        start_date, end_date = dr
+        st.session_state.date_start=start_date; st.session_state.date_end=end_date
     else:
-        start_date = st.session_state.date_start
-        end_date   = st.session_state.date_end
+        start_date = end_date = st.session_state.date_start
 
-    st.markdown(f"<small style='color:#6b7280'>📌 {start_date} ~ {end_date}</small>",
-                unsafe_allow_html=True)
-
+    st.markdown(f"<small style='color:#6b7280'>📌 {start_date} ~ {end_date}</small>", unsafe_allow_html=True)
     st.markdown("---")
-    if st.button("🔄 데이터 새로고침", use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
+    if st.button("🔄 새로고침", use_container_width=True):
+        st.cache_data.clear(); st.rerun()
     st.markdown(f"<small style='color:#9ca3af'>업데이트: {datetime.now().strftime('%H:%M:%S')}</small>",
                 unsafe_allow_html=True)
 
-# ── 데이터 로드 ──────────────────────────────────────
+# ── 데이터 로드 ───────────────────────────────────────
 if not sheet_key:
-    st.markdown("""
-    <div style='text-align:center; padding:80px 20px; color:#6b7280;'>
-        <div style='font-size:48px; margin-bottom:16px'>📊</div>
+    st.markdown("""<div style='text-align:center;padding:80px 20px;color:#6b7280'>
+        <div style='font-size:48px;margin-bottom:16px'>📊</div>
         <h2>야간자율학습 출석 대시보드</h2>
         <p>좌측 사이드바에서 Google Sheet Key를 입력해 주세요.</p>
     </div>""", unsafe_allow_html=True)
     st.stop()
 
 with st.spinner("데이터 불러오는 중..."):
-    df_all = load_data(sheet_key, worksheet_name)
+    df_all = load_data(sheet_key, ws_name)
 
 if df_all.empty:
-    st.markdown("""
-    <div style='text-align:center; padding:60px 20px; color:#6b7280;'>
-        <div style='font-size:40px; margin-bottom:12px'>📭</div>
-        <h3>데이터가 없습니다</h3>
-        <p>Sheet Key와 워크시트 이름을 확인해 주세요.</p>
+    st.markdown("""<div style='text-align:center;padding:60px 20px;color:#6b7280'>
+        <div style='font-size:40px;margin-bottom:12px'>📭</div>
+        <h3>데이터가 없습니다</h3><p>Sheet Key와 워크시트 이름을 확인해 주세요.</p>
     </div>""", unsafe_allow_html=True)
     st.stop()
 
-df = filter_df(df_all, start_date, end_date)
+df_valid = filter_valid(df_all)   # 미지정 제거된 전체
+df       = filter_period(df_valid, start_date, end_date)  # 기간 필터
 
 # ── 헤더 ─────────────────────────────────────────────
 st.markdown(f"""
-<div style='display:flex; align-items:center; gap:12px; margin-bottom:4px'>
-    <span style='font-size:2rem'>🏫</span>
-    <div>
-        <h1 style='margin:0; font-size:1.8rem; color:#1d3a6e'>야간자율학습 출석 대시보드</h1>
-        <p style='margin:0; color:#6b7280; font-size:0.85rem'>
-            한영외국어고등학교 &nbsp;·&nbsp; 📅 {start_date} ~ {end_date}
-            &nbsp;·&nbsp; 전체 {len(df_all)}건 중 기간 내 {len(df)}건
-        </p>
-    </div>
-</div>
-""", unsafe_allow_html=True)
+<div style='display:flex;align-items:center;gap:12px;margin-bottom:4px'>
+  <span style='font-size:2rem'>🏫</span>
+  <div>
+    <h1 style='margin:0;font-size:1.7rem;color:#1d3a6e'>야간자율학습 출석 대시보드</h1>
+    <p style='margin:0;color:#6b7280;font-size:0.82rem'>
+      한영외국어고등학교 &nbsp;·&nbsp; 📅 {start_date} ~ {end_date}
+      &nbsp;·&nbsp; 기간 내 {len(df)}건
+    </p>
+  </div>
+</div>""", unsafe_allow_html=True)
 
 # ── 탭 ───────────────────────────────────────────────
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🏠 오늘 현황", "📈 주차별 추이", "🏫 학년·반별", "🌍 어학과별", "📅 요일별 분석", "👩‍🏫 담임용 조회"
+    "🏠 오늘 현황", "🏆 TOP3 시상", "📈 주차별 추이",
+    "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회"
 ])
 
 # ══════════════════════════════════════════════════
-# TAB 1: 오늘 현황
+# TAB 1: 오늘 현황 — 학년별 숫자 중심
 # ══════════════════════════════════════════════════
 with tab1:
-    today_ts = pd.Timestamp(today)
-    df_today = df_all[df_all['날짜'] == today_ts] if '날짜' in df_all.columns else pd.DataFrame()
+    today_ts  = pd.Timestamp(today)
+    df_today  = df_all[df_all['날짜']==today_ts] if '날짜' in df_all.columns else pd.DataFrame()
+    df_today_v = filter_valid(df_today)
 
-    st.markdown("<div class='section-title'>📊 오늘 출석 요약</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>📊 오늘 출석 현황</div>", unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("총 체크인", f"{len(df_today)}건")
-    with c2: st.metric("고유 학생 수", f"{safe_nunique(df_today.get('이메일', pd.Series()))}명")
-    with c3:
-        p1 = 0
-        if not df_today.empty and '교시' in df_today.columns and '이메일' in df_today.columns:
-            p1 = df_today[df_today['교시'] == '1교시']['이메일'].nunique()
-        st.metric("1교시 참여", f"{p1}명")
-    with c4:
-        p2 = 0
-        if not df_today.empty and '교시' in df_today.columns and '이메일' in df_today.columns:
-            p2 = df_today[df_today['교시'] == '2~3교시']['이메일'].nunique()
-        st.metric("2~3교시 참여", f"{p2}명")
+    # 전체 요약
+    total_today = df_today_v['이메일'].nunique() if not df_today_v.empty and '이메일' in df_today_v.columns else 0
+    g1 = df_today_v[df_today_v['학년']==1]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
+    g2 = df_today_v[df_today_v['학년']==2]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
+    g3 = df_today_v[df_today_v['학년']==3]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
 
-    if df_today.empty:
+    c0, c1, c2, c3 = st.columns(4)
+    with c0: st.metric("🏫 전체", f"{total_today}명")
+    with c1: st.metric("1️⃣ 1학년", f"{g1}명")
+    with c2: st.metric("2️⃣ 2학년", f"{g2}명")
+    with c3: st.metric("3️⃣ 3학년", f"{g3}명")
+
+    if df_today_v.empty:
         empty_state("오늘 출석 데이터가 없습니다.")
     else:
         col_l, col_r = st.columns(2)
+
         with col_l:
-            if '학년' in df_today.columns and '이메일' in df_today.columns:
-                gd = (df_today.groupby('학년')['이메일'].nunique()
-                      .reset_index().rename(columns={'이메일':'학생수'}).sort_values('학년'))
+            st.markdown("<div class='section-title'>학년별 참여 인원</div>", unsafe_allow_html=True)
+            if '학년' in df_today_v.columns and '이메일' in df_today_v.columns:
+                gd = (df_today_v.groupby('학년')['이메일'].nunique()
+                      .reset_index().rename(columns={'이메일':'학생수'}))
                 gd['학년명'] = gd['학년'].apply(lambda x: f"{int(x)}학년")
-                fig = px.bar(gd, x='학년명', y='학생수', color='학생수',
-                             color_continuous_scale=['#93c5fd','#1d4ed8'],
-                             text='학생수', title="학년별 참여 인원")
+                fig = px.bar(gd, x='학년명', y='학생수',
+                             color='학생수', color_continuous_scale=['#93c5fd','#1d4ed8'],
+                             text='학생수')
                 fig.update_traces(textposition='outside')
                 fig.update_layout(showlegend=False, coloraxis_showscale=False,
                     plot_bgcolor='white', paper_bgcolor='white',
-                    margin=dict(t=40,b=0,l=0,r=0), height=280)
+                    margin=dict(t=20,b=0), height=260)
                 st.plotly_chart(fig, use_container_width=True)
-            else:
-                empty_state("학년별 데이터 없음")
 
         with col_r:
-            if '학년' in df_today.columns and '반' in df_today.columns and '이메일' in df_today.columns:
-                cd = (df_today.groupby(['학년','반'])['이메일'].nunique()
+            st.markdown("<div class='section-title'>반별 참여 인원</div>", unsafe_allow_html=True)
+            if '학년' in df_today_v.columns and '반' in df_today_v.columns:
+                cd = (df_today_v.groupby(['학년','반'])['이메일'].nunique()
                       .reset_index().rename(columns={'이메일':'학생수'}))
-                cd = cd.dropna(subset=['학년','반'])
-                cd = cd[~cd['학년'].astype(str).isin(['미지정',''])]
-                cd = cd[~cd['반'].astype(str).isin(['미지정',''])]
-                def safe_label_cd(r):
-                    try: return f"{int(r['학년'])}-{int(r['반'])}반"
-                    except: return "미확인"
-                cd['반명'] = cd.apply(safe_label_cd, axis=1)
-                fig2 = px.bar(cd, x='반명', y='학생수', color='학년',
-                              text='학생수', title="반별 참여 인원",
-                              color_continuous_scale='Blues')
-                fig2.update_traces(textposition='outside')
-                fig2.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                    margin=dict(t=40,b=0,l=0,r=0), height=280,
-                    showlegend=False, coloraxis_showscale=False)
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                empty_state("반별 데이터 없음")
+                cd['반명'] = cd.apply(lambda r: make_label(r['학년'],r['반']), axis=1)
+                cd = cd[cd['반명']!='미확인']
+                if not cd.empty:
+                    fig2 = px.bar(cd, x='반명', y='학생수', color='학년',
+                                  text='학생수', color_continuous_scale='Blues')
+                    fig2.update_traces(textposition='outside')
+                    fig2.update_layout(plot_bgcolor='white', paper_bgcolor='white',
+                        margin=dict(t=20,b=0), height=260,
+                        showlegend=False, coloraxis_showscale=False)
+                    st.plotly_chart(fig2, use_container_width=True)
+                else:
+                    empty_state("반별 데이터 없음")
 
+        # 교시별
+        st.markdown("<div class='section-title'>교시별 현황</div>", unsafe_allow_html=True)
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            p1 = df_today_v[df_today_v['교시']=='1교시']['이메일'].nunique() if '교시' in df_today_v.columns else 0
+            st.metric("1교시 참여", f"{p1}명")
+        with ec2:
+            p2 = df_today_v[df_today_v['교시']=='2~3교시']['이메일'].nunique() if '교시' in df_today_v.columns else 0
+            st.metric("2~3교시 참여", f"{p2}명")
+
+        # 오늘 명단
         st.markdown("<div class='section-title'>오늘 출석 명단</div>", unsafe_allow_html=True)
-        cols_show = [c for c in ['학년','반','번호','이름','좌석','교시','시간'] if c in df_today.columns]
-        if cols_show:
-            st.dataframe(df_today[cols_show].sort_values(
-                [c for c in ['학년','반','번호'] if c in cols_show]), use_container_width=True, height=300)
-        else:
-            empty_state("표시할 컬럼이 없습니다.")
+        show_cols = [c for c in ['학년','반','번호','이름','교시','좌석','시간'] if c in df_today_v.columns]
+        if show_cols:
+            sort_by = [c for c in ['학년','반','번호'] if c in show_cols]
+            st.dataframe(df_today_v[show_cols].sort_values(sort_by) if sort_by else df_today_v[show_cols],
+                         use_container_width=True, height=320)
 
 # ══════════════════════════════════════════════════
-# TAB 2: 주차별 추이
+# TAB 2: TOP3 시상
 # ══════════════════════════════════════════════════
 with tab2:
+    st.markdown("<div class='section-title'>🏆 기간 내 TOP3 현황</div>", unsafe_allow_html=True)
+    st.caption(f"기간: {start_date} ~ {end_date}")
+
+    if df.empty or '이메일' not in df.columns:
+        empty_state("선택 기간에 데이터가 없습니다.")
+    else:
+        # 학생별 집계
+        grp_cols = [c for c in ['이메일','이름','학년','반'] if c in df.columns]
+        stu = (df.groupby(grp_cols)
+               .agg(체크인수=('날짜','count'), 출석일수=('날짜','nunique'))
+               .reset_index())
+
+        def show_top3(data, title, score_col='체크인수'):
+            st.markdown(f"**{title}**")
+            top = data.nlargest(3, score_col).reset_index(drop=True)
+            if top.empty:
+                empty_state("데이터 없음")
+                return
+            for i, row in top.iterrows():
+                medal = MEDALS[i] if i < 3 else f"{i+1}위"
+                cls   = ['gold','silver','bronze'][i] if i < 3 else ''
+                name  = row.get('이름','')
+                grade = safe_int(row.get('학년',''))
+                klass = safe_int(row.get('반',''))
+                dept  = ''
+                if '어학과' in row.index: dept = row['어학과']
+                info  = f"{grade}학년 {klass}반 {dept}" if grade and klass else ''
+                cnt   = int(row[score_col])
+                days  = int(row.get('출석일수', 0))
+                st.markdown(f"""
+                <div class="top3-card {cls}">
+                  <span style="font-size:1.3rem">{medal}</span>
+                  <strong style="font-size:1rem;margin-left:8px">{name}</strong>
+                  <span style="color:#6b7280;font-size:0.85rem;margin-left:8px">{info}</span>
+                  <span style="float:right;color:#2d7ef7;font-weight:700">{cnt}회 · {days}일</span>
+                </div>""", unsafe_allow_html=True)
+
+        # 전체 TOP3
+        st.markdown("<div class='section-title'>🌟 전체 학생 TOP3 (체크인 수)</div>", unsafe_allow_html=True)
+        if '어학과' not in stu.columns and '반' in df.columns:
+            stu['어학과'] = stu['반'].apply(lambda k: (
+                '중국어과' if k<=2 else '일본어과' if k<=4 else '독일어과'
+                if k<=6 else '프랑스어과' if k<=8 else '스페인어과') if pd.notna(k) else '')
+        show_top3(stu, "🏅 전체 TOP3")
+
+        st.markdown("---")
+
+        # 학년별 TOP3
+        st.markdown("<div class='section-title'>📚 학년별 학생 TOP3</div>", unsafe_allow_html=True)
+        gc1, gc2, gc3 = st.columns(3)
+        for col, grade_n in zip([gc1, gc2, gc3], [1, 2, 3]):
+            with col:
+                grade_stu = stu[stu['학년']==grade_n] if '학년' in stu.columns else pd.DataFrame()
+                show_top3(grade_stu, f"🎓 {grade_n}학년 TOP3")
+
+        st.markdown("---")
+
+        # 반별 TOP3
+        st.markdown("<div class='section-title'>🏫 반별 체크인 TOP3</div>", unsafe_allow_html=True)
+        if '학년' in df.columns and '반' in df.columns and '이메일' in df.columns:
+            cls_sum = (df.groupby(['학년','반'])
+                       .agg(체크인수=('이메일','count'), 고유학생수=('이메일','nunique'))
+                       .reset_index())
+            cls_sum['반명'] = cls_sum.apply(lambda r: make_label(r['학년'],r['반']), axis=1)
+            cls_sum = cls_sum[cls_sum['반명']!='미확인']
+            cls_top = cls_sum.nlargest(3,'체크인수').reset_index(drop=True)
+            if cls_top.empty:
+                empty_state("반별 데이터 없음")
+            else:
+                rc1, rc2, rc3 = st.columns(3)
+                for col, (i, row) in zip([rc1,rc2,rc3], cls_top.iterrows()):
+                    with col:
+                        medal = MEDALS[i] if i<3 else f"{i+1}위"
+                        st.markdown(f"""
+                        <div class="top3-card {'gold silver bronze'.split()[i] if i<3 else ''}">
+                          <div style="font-size:1.5rem;text-align:center">{medal}</div>
+                          <div style="text-align:center;font-size:1.1rem;font-weight:700">{row['반명']}</div>
+                          <div style="text-align:center;color:#2d7ef7;font-size:1rem">
+                            체크인 {int(row['체크인수'])}회
+                          </div>
+                          <div style="text-align:center;color:#6b7280;font-size:0.85rem">
+                            참여 학생 {int(row['고유학생수'])}명
+                          </div>
+                        </div>""", unsafe_allow_html=True)
+
+        st.markdown("---")
+
+        # 어학과별 TOP3
+        st.markdown("<div class='section-title'>🌍 어학과별 체크인 TOP3</div>", unsafe_allow_html=True)
+        if '어학과' in df.columns and '이메일' in df.columns:
+            dept_sum = (df.groupby('어학과')
+                        .agg(체크인수=('이메일','count'), 고유학생수=('이메일','nunique'))
+                        .reset_index()
+                        .nlargest(3,'체크인수').reset_index(drop=True))
+            dc1, dc2, dc3 = st.columns(3)
+            for col, (i, row) in zip([dc1,dc2,dc3], dept_sum.iterrows()):
+                with col:
+                    medal = MEDALS[i] if i<3 else f"{i+1}위"
+                    st.markdown(f"""
+                    <div class="top3-card {'gold silver bronze'.split()[i] if i<3 else ''}">
+                      <div style="font-size:1.5rem;text-align:center">{medal}</div>
+                      <div style="text-align:center;font-size:1.1rem;font-weight:700">{row['어학과']}</div>
+                      <div style="text-align:center;color:#2d7ef7;font-size:1rem">
+                        체크인 {int(row['체크인수'])}회
+                      </div>
+                      <div style="text-align:center;color:#6b7280;font-size:0.85rem">
+                        참여 학생 {int(row['고유학생수'])}명
+                      </div>
+                    </div>""", unsafe_allow_html=True)
+
+# ══════════════════════════════════════════════════
+# TAB 3: 주차별 추이
+# ══════════════════════════════════════════════════
+with tab3:
     st.markdown("<div class='section-title'>📈 이번 주 vs 지난 주</div>", unsafe_allow_html=True)
 
     this_s, this_e = get_week_range(0)
     last_s, last_e = get_week_range(-1)
-    df_this = filter_df(df_all, this_s, this_e)
-    df_last = filter_df(df_all, last_s, last_e)
+    df_this = filter_valid(filter_period(df_all, this_s, this_e))
+    df_last = filter_valid(filter_period(df_all, last_s, last_e))
 
-    this_cnt = safe_nunique(df_this.get('이메일', pd.Series()))
-    last_cnt = safe_nunique(df_last.get('이메일', pd.Series()))
-    diff     = this_cnt - last_cnt
+    this_cnt = df_this['이메일'].nunique() if not df_this.empty and '이메일' in df_this.columns else 0
+    last_cnt = df_last['이메일'].nunique() if not df_last.empty and '이메일' in df_last.columns else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: st.metric("이번 주 참여 학생", f"{this_cnt}명", delta=f"{diff:+d}명")
+    c1,c2,c3,c4 = st.columns(4)
+    with c1: st.metric("이번 주 학생", f"{this_cnt}명", delta=f"{this_cnt-last_cnt:+d}명")
     with c2: st.metric("이번 주 체크인", f"{len(df_this)}건")
-    with c3: st.metric("지난 주 참여 학생", f"{last_cnt}명")
+    with c3: st.metric("지난 주 학생", f"{last_cnt}명")
     with c4: st.metric("지난 주 체크인", f"{len(df_last)}건")
 
-    day_order_num = [0,1,2,3,4]
-    day_map_ko    = {0:'월',1:'화',2:'수',3:'목',4:'금'}
-
-    def daily_uniq(df_w):
-        if df_w.empty or '이메일' not in df_w.columns or '날짜' not in df_w.columns:
+    day_map = {0:'월',1:'화',2:'수',3:'목',4:'금'}
+    def daily_cnt(d):
+        if d.empty or '이메일' not in d.columns or '날짜' not in d.columns:
             return pd.DataFrame(columns=['요일번호','학생수','요일'])
-        d = (df_w.groupby(df_w['날짜'].dt.dayofweek)['이메일']
-             .nunique().reset_index())
-        d.columns = ['요일번호','학생수']
-        d['요일'] = d['요일번호'].map(day_map_ko)
-        return d.sort_values('요일번호')
+        r = d.groupby(d['날짜'].dt.dayofweek)['이메일'].nunique().reset_index()
+        r.columns = ['요일번호','학생수']
+        r['요일'] = r['요일번호'].map(day_map)
+        return r.sort_values('요일번호')
 
-    dc_this = daily_uniq(df_this)
-    dc_last = daily_uniq(df_last)
+    dc_this = daily_cnt(df_this)
+    dc_last = daily_cnt(df_last)
 
-    if dc_this.empty and dc_last.empty:
-        empty_state("주차 데이터가 없습니다.")
-    else:
-        fig = go.Figure()
-        if not dc_this.empty:
-            fig.add_trace(go.Scatter(x=dc_this['요일'], y=dc_this['학생수'],
-                mode='lines+markers+text', name='이번 주',
-                line=dict(color='#2d7ef7', width=3), marker=dict(size=10),
-                text=dc_this['학생수'], textposition='top center'))
-        if not dc_last.empty:
-            fig.add_trace(go.Scatter(x=dc_last['요일'], y=dc_last['학생수'],
-                mode='lines+markers+text', name='지난 주',
-                line=dict(color='#94a3b8', width=2, dash='dash'), marker=dict(size=8),
-                text=dc_last['학생수'], textposition='bottom center'))
-        fig.update_layout(title="이번 주 vs 지난 주 일별 참여 학생 수",
-            xaxis_title="요일", yaxis_title="참여 학생 수",
-            plot_bgcolor='white', paper_bgcolor='white',
-            legend=dict(orientation='h', y=1.1), height=360,
-            margin=dict(t=60,b=20))
-        fig.update_xaxes(gridcolor='#f3f4f6')
-        fig.update_yaxes(gridcolor='#f3f4f6')
-        st.plotly_chart(fig, use_container_width=True)
+    fig = go.Figure()
+    if not dc_this.empty:
+        fig.add_trace(go.Scatter(x=dc_this['요일'],y=dc_this['학생수'],
+            mode='lines+markers+text',name='이번 주',
+            line=dict(color='#2d7ef7',width=3),marker=dict(size=10),
+            text=dc_this['학생수'],textposition='top center'))
+    if not dc_last.empty:
+        fig.add_trace(go.Scatter(x=dc_last['요일'],y=dc_last['학생수'],
+            mode='lines+markers+text',name='지난 주',
+            line=dict(color='#94a3b8',width=2,dash='dash'),marker=dict(size=8),
+            text=dc_last['학생수'],textposition='bottom center'))
+    fig.update_layout(title="이번 주 vs 지난 주",plot_bgcolor='white',paper_bgcolor='white',
+        legend=dict(orientation='h',y=1.1),height=340,margin=dict(t=50,b=20))
+    fig.update_xaxes(gridcolor='#f3f4f6'); fig.update_yaxes(gridcolor='#f3f4f6')
+    st.plotly_chart(fig, use_container_width=True)
 
     st.markdown("<div class='section-title'>선택 기간 일별 추이</div>", unsafe_allow_html=True)
-    if df.empty or '날짜' not in df.columns or '이메일' not in df.columns:
+    if df.empty or '날짜' not in df.columns:
         empty_state("선택 기간에 데이터가 없습니다.")
     else:
-        daily = (df.groupby('날짜')['이메일'].nunique()
-                 .reset_index().rename(columns={'이메일':'학생수'}).sort_values('날짜'))
+        daily = (df.groupby('날짜')['이메일'].nunique().reset_index()
+                 .rename(columns={'이메일':'학생수'}).sort_values('날짜'))
         daily['날짜str'] = daily['날짜'].dt.strftime('%m/%d(%a)')
-        fig2 = px.area(daily, x='날짜str', y='학생수',
-                       title="일별 참여 학생 수", color_discrete_sequence=['#2d7ef7'])
-        fig2.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-            height=300, margin=dict(t=40,b=20),
-            xaxis_title="날짜", yaxis_title="학생 수")
-        fig2.update_xaxes(gridcolor='#f3f4f6')
-        fig2.update_yaxes(gridcolor='#f3f4f6')
+        fig2 = px.area(daily,x='날짜str',y='학생수',title="일별 참여 학생 수",
+                       color_discrete_sequence=['#2d7ef7'])
+        fig2.update_layout(plot_bgcolor='white',paper_bgcolor='white',
+            height=280,margin=dict(t=40,b=20))
         st.plotly_chart(fig2, use_container_width=True)
 
 # ══════════════════════════════════════════════════
-# TAB 3: 학년·반별
+# TAB 4: 학년·반별
 # ══════════════════════════════════════════════════
-with tab3:
+with tab4:
     st.markdown("<div class='section-title'>🏫 학년·반별 출석 현황</div>", unsafe_allow_html=True)
 
     if df.empty or '학년' not in df.columns:
         empty_state("선택 기간에 데이터가 없습니다.")
     else:
-        grades = sorted(df['학년'].dropna().unique().astype(int).tolist())
-        sel_grade = st.selectbox("학년 선택", ["전체"] + [f"{g}학년" for g in grades])
-        df_g = df if sel_grade == "전체" else df[df['학년'] == int(sel_grade.replace('학년',''))]
+        valid_g = sorted([int(g) for g in df['학년'].dropna().unique()
+                          if is_valid(g) and str(g).replace('.0','').isdigit()])
+        sel_grade = st.selectbox("학년 선택", ["전체"]+[f"{g}학년" for g in valid_g])
+        df_g = df if sel_grade=="전체" else df[df['학년']==int(sel_grade.replace('학년',''))]
 
         if df_g.empty:
-            empty_state(f"{sel_grade} 데이터가 없습니다.")
+            empty_state(f"{sel_grade} 데이터 없음")
         elif '반' in df_g.columns and '이메일' in df_g.columns:
-            summary = (df_g.groupby(['학년','반'])
-                       .agg(체크인수=('이메일','count'), 고유학생수=('이메일','nunique'))
-                       .reset_index().sort_values(['학년','반']))
-            summary = summary.dropna(subset=['학년','반'])
-            summary = summary[summary['학년'].astype(str) != '미지정']
-            summary = summary[summary['반'].astype(str) != '미지정']
-            def make_label(r):
-                try:
-                    return f"{int(r['학년'])}-{int(r['반'])}반"
-                except:
-                    return "미확인"
-            summary = summary.dropna(subset=['학년','반'])
-            summary = summary[~summary['학년'].astype(str).isin(['미지정',''])]
-            summary = summary[~summary['반'].astype(str).isin(['미지정',''])]
-            def safe_label(r):
-                try: return f"{int(r['학년'])}-{int(r['반'])}반"
-                except: return "미확인"
-            summary['반명'] = summary.apply(safe_label, axis=1)
+            sm = (df_g.groupby(['학년','반'])
+                  .agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique'))
+                  .reset_index())
+            sm['반명'] = sm.apply(lambda r: make_label(r['학년'],r['반']),axis=1)
+            sm = sm[sm['반명']!='미확인'].sort_values(['학년','반'])
 
-            col_l, col_r = st.columns([3,2])
-            with col_l:
-                fig = px.bar(summary, x='반명', y='고유학생수', color='학년',
-                             text='고유학생수', title="반별 참여 학생 수",
-                             color_continuous_scale='Blues')
+            cl, cr = st.columns([3,2])
+            with cl:
+                fig = px.bar(sm,x='반명',y='고유학생수',color='학년',text='고유학생수',
+                             title="반별 참여 학생 수",color_continuous_scale='Blues')
                 fig.update_traces(textposition='outside')
-                fig.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                    height=380, margin=dict(t=40,b=20),
-                    showlegend=True, coloraxis_showscale=False)
+                fig.update_layout(plot_bgcolor='white',paper_bgcolor='white',
+                    height=360,margin=dict(t=40,b=20),coloraxis_showscale=False)
                 st.plotly_chart(fig, use_container_width=True)
-            with col_r:
-                st.markdown("**반별 상세 데이터**")
-                st.dataframe(summary[['반명','체크인수','고유학생수']]
+            with cr:
+                st.markdown("**반별 상세**")
+                st.dataframe(sm[['반명','체크인수','고유학생수']]
                     .rename(columns={'반명':'반','체크인수':'체크인','고유학생수':'학생수'}),
-                    use_container_width=True, height=380)
+                    use_container_width=True, height=360)
 
+        # 반 드릴다운
         st.markdown("<div class='section-title'>반 상세 보기</div>", unsafe_allow_html=True)
-
-        # 유효한 학년만 (미지정 제외)
-        valid_grades_drill = sorted([int(g) for g in df['학년'].dropna().unique()
-            if str(g) not in ['미지정',''] and str(g).replace('.0','').isdigit()]) if '학년' in df.columns else []
-
-        if not valid_grades_drill:
+        if not valid_g:
             empty_state("유효한 학년 데이터가 없습니다.")
-            sel_k = None
-            g_num2 = None
         else:
-            c1, c2 = st.columns(2)
-            with c1:
-                sel_g2 = st.selectbox("학년", [f"{g}학년" for g in valid_grades_drill], key='drill_g')
+            dc1, dc2 = st.columns(2)
+            with dc1:
+                sel_g2 = st.selectbox("학년", [f"{g}학년" for g in valid_g], key='drill_g')
                 g_num2 = int(sel_g2.replace('학년',''))
-            with c2:
-                klasses = sorted([int(k) for k in df[df['학년']==g_num2]['반'].dropna().unique()
-                    if str(k) not in ['미지정',''] and str(k).replace('.0','').isdigit()]) if '반' in df.columns else []
-                if klasses:
-                    sel_k = st.selectbox("반", [f"{k}반" for k in klasses], key='drill_k')
+            with dc2:
+                valid_k = sorted([int(k) for k in df[df['학년']==g_num2]['반'].dropna().unique()
+                    if is_valid(k) and str(k).replace('.0','').isdigit()]) if '반' in df.columns else []
+                if valid_k:
+                    sel_k2 = st.selectbox("반", [f"{k}반" for k in valid_k], key='drill_k')
+                    k_num2 = int(sel_k2.replace('반',''))
                 else:
-                    sel_k = None
-                    empty_state("반 데이터가 없습니다.")
+                    sel_k2 = None; k_num2 = None
+                    empty_state("반 데이터 없음")
 
-        if sel_k and g_num2:
-            k_num  = int(sel_k.replace('반',''))
-            df_cls = df[(df['학년']==g_num2) & (df['반']==k_num)]
-            if df_cls.empty:
-                empty_state(f"{g_num2}학년 {k_num}반 데이터가 없습니다.")
-            else:
-                mc1, mc2, mc3 = st.columns(3)
-                with mc1: st.metric("총 체크인", f"{len(df_cls)}건")
-                with mc2: st.metric("참여 학생", f"{safe_nunique(df_cls.get('이메일', pd.Series()))}명")
-                with mc3: st.metric("운영 일수", f"{safe_nunique(df_cls.get('날짜', pd.Series()))}일")
-
-                if '이름' in df_cls.columns:
-                    group_cols = [c for c in ['번호','이름'] if c in df_cls.columns]
-                    stu = (df_cls.groupby(group_cols)
-                           .agg(체크인수=('날짜','count'), 출석일수=('날짜','nunique'))
-                           .reset_index()
-                           .sort_values(group_cols[0]))
-                    st.dataframe(stu, use_container_width=True, height=300)
+            if sel_k2 and k_num2:
+                df_cls = df[(df['학년']==g_num2)&(df['반']==k_num2)]
+                if df_cls.empty:
+                    empty_state(f"{g_num2}학년 {k_num2}반 데이터 없음")
                 else:
-                    empty_state("이름 컬럼이 없습니다.")
+                    m1,m2,m3 = st.columns(3)
+                    with m1: st.metric("총 체크인", f"{len(df_cls)}건")
+                    with m2: st.metric("참여 학생", f"{df_cls['이메일'].nunique() if '이메일' in df_cls.columns else 0}명")
+                    with m3: st.metric("운영 일수", f"{df_cls['날짜'].nunique() if '날짜' in df_cls.columns else 0}일")
+                    if '이름' in df_cls.columns:
+                        gcols = [c for c in ['번호','이름'] if c in df_cls.columns]
+                        stu2  = (df_cls.groupby(gcols)
+                                 .agg(체크인수=('날짜','count'),출석일수=('날짜','nunique'))
+                                 .reset_index().sort_values(gcols[0]))
+                        st.dataframe(stu2, use_container_width=True, height=280)
 
 # ══════════════════════════════════════════════════
-# TAB 4: 어학과별
-# ══════════════════════════════════════════════════
-with tab4:
-    st.markdown("<div class='section-title'>🌍 어학과별 출석 현황</div>", unsafe_allow_html=True)
-
-    if df.empty or '어학과' not in df.columns or '이메일' not in df.columns:
-        empty_state("선택 기간에 데이터가 없습니다.")
-    else:
-        dept_s = (df.groupby('어학과')
-                  .agg(체크인수=('이메일','count'), 고유학생수=('이메일','nunique'),
-                       운영일수=('날짜','nunique'))
-                  .reset_index().sort_values('고유학생수', ascending=False))
-        dept_s['1일평균'] = (dept_s['체크인수'] / dept_s['운영일수'].replace(0,1)).round(1)
-
-        col_l, col_r = st.columns(2)
-        with col_l:
-            fig = px.pie(dept_s, names='어학과', values='고유학생수',
-                         title="어학과별 참여 학생 비율",
-                         color_discrete_sequence=px.colors.qualitative.Set2, hole=0.4)
-            fig.update_traces(textinfo='label+percent', textfont_size=13)
-            fig.update_layout(height=380, margin=dict(t=40,b=0),
-                paper_bgcolor='white', legend=dict(orientation='v',y=0.5))
-            st.plotly_chart(fig, use_container_width=True)
-        with col_r:
-            fig2 = px.bar(dept_s, x='어학과', y='고유학생수', color='어학과',
-                          text='고유학생수', title="어학과별 참여 학생 수",
-                          color_discrete_sequence=px.colors.qualitative.Set2)
-            fig2.update_traces(textposition='outside', showlegend=False)
-            fig2.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                height=380, margin=dict(t=40,b=20), showlegend=False)
-            st.plotly_chart(fig2, use_container_width=True)
-
-        st.markdown("<div class='section-title'>어학과별 일별 추이</div>", unsafe_allow_html=True)
-        if '날짜' in df.columns:
-            dept_d = (df.groupby(['날짜','어학과'])['이메일']
-                      .nunique().reset_index().rename(columns={'이메일':'학생수'}))
-            if dept_d.empty:
-                empty_state("일별 추이 데이터가 없습니다.")
-            else:
-                fig3 = px.line(dept_d, x='날짜', y='학생수', color='어학과',
-                               title="어학과별 일별 참여 학생 수", markers=True,
-                               color_discrete_sequence=px.colors.qualitative.Set2)
-                fig3.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                    height=340, margin=dict(t=40,b=20))
-                fig3.update_xaxes(gridcolor='#f3f4f6')
-                fig3.update_yaxes(gridcolor='#f3f4f6')
-                st.plotly_chart(fig3, use_container_width=True)
-
-        st.markdown("**어학과별 상세 데이터**")
-        st.dataframe(dept_s, use_container_width=True)
-
-# ══════════════════════════════════════════════════
-# TAB 5: 요일별 분석
+# TAB 5: 어학과별
 # ══════════════════════════════════════════════════
 with tab5:
-    st.markdown("<div class='section-title'>📅 요일별 출석 분석</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>🌍 어학과별 출석 현황</div>", unsafe_allow_html=True)
 
-    if df.empty or '요일' not in df.columns or '이메일' not in df.columns:
+    if df.empty or '어학과' not in df.columns:
         empty_state("선택 기간에 데이터가 없습니다.")
     else:
-        day_order = ['월','화','수','목','금']
-        day_s = (df.groupby('요일')
-                 .agg(총체크인=('이메일','count'), 학생수=('이메일','nunique'))
-                 .reset_index())
-        day_s['요일'] = pd.Categorical(day_s['요일'], categories=day_order, ordered=True)
-        day_s = day_s.sort_values('요일')
+        ds = (df.groupby('어학과')
+              .agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique'),운영일수=('날짜','nunique'))
+              .reset_index().sort_values('고유학생수',ascending=False))
+        ds['1일평균'] = (ds['체크인수']/ds['운영일수'].replace(0,1)).round(1)
 
-        col_l, col_r = st.columns(2)
-        with col_l:
-            if day_s.empty:
-                empty_state("요일별 데이터가 없습니다.")
-            else:
-                fig = px.bar(day_s, x='요일', y='총체크인', color='총체크인',
-                             color_continuous_scale=['#bfdbfe','#1d4ed8'],
-                             text='총체크인', title="요일별 총 체크인 수")
-                fig.update_traces(textposition='outside')
-                fig.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                    height=340, margin=dict(t=40,b=20), coloraxis_showscale=False)
-                st.plotly_chart(fig, use_container_width=True)
+        cl,cr = st.columns(2)
+        with cl:
+            fig = px.pie(ds,names='어학과',values='고유학생수',title="어학과별 참여 비율",
+                         color_discrete_sequence=px.colors.qualitative.Set2,hole=0.4)
+            fig.update_traces(textinfo='label+percent',textfont_size=13)
+            fig.update_layout(height=360,margin=dict(t=40,b=0),paper_bgcolor='white')
+            st.plotly_chart(fig, use_container_width=True)
+        with cr:
+            fig2 = px.bar(ds,x='어학과',y='고유학생수',color='어학과',text='고유학생수',
+                          title="어학과별 참여 학생 수",
+                          color_discrete_sequence=px.colors.qualitative.Set2)
+            fig2.update_traces(textposition='outside',showlegend=False)
+            fig2.update_layout(plot_bgcolor='white',paper_bgcolor='white',
+                height=360,margin=dict(t=40,b=20))
+            st.plotly_chart(fig2, use_container_width=True)
 
-        with col_r:
-            if '교시' in df.columns:
-                hm = (df.groupby(['요일','교시'])['이메일']
-                      .nunique().reset_index().rename(columns={'이메일':'학생수'}))
-                if hm.empty:
-                    empty_state("교시×요일 데이터가 없습니다.")
-                else:
-                    pivot = hm.pivot(index='교시', columns='요일', values='학생수').fillna(0)
-                    pivot = pivot[[d for d in day_order if d in pivot.columns]]
-                    fig2  = px.imshow(pivot, color_continuous_scale='Blues',
-                                      title="요일×교시 히트맵 (학생 수)",
-                                      text_auto=True, aspect='auto')
-                    fig2.update_layout(height=340, margin=dict(t=40,b=20), paper_bgcolor='white')
-                    st.plotly_chart(fig2, use_container_width=True)
-            else:
-                empty_state("교시 컬럼이 없습니다.")
-
-        st.markdown("<div class='section-title'>어학과 × 요일 비교</div>", unsafe_allow_html=True)
-        if '어학과' in df.columns:
-            dd = (df.groupby(['요일','어학과'])['이메일']
-                  .nunique().reset_index().rename(columns={'이메일':'학생수'}))
-            if dd.empty:
-                empty_state("어학과×요일 데이터가 없습니다.")
-            else:
-                dd['요일'] = pd.Categorical(dd['요일'], categories=day_order, ordered=True)
-                dd = dd.sort_values('요일')
-                fig3 = px.bar(dd, x='요일', y='학생수', color='어학과', barmode='group',
-                              title="요일별 어학과 참여 학생 수",
-                              color_discrete_sequence=px.colors.qualitative.Set2)
-                fig3.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                    height=360, margin=dict(t=40,b=20))
+        if '날짜' in df.columns:
+            dd = (df.groupby(['날짜','어학과'])['이메일'].nunique()
+                  .reset_index().rename(columns={'이메일':'학생수'}))
+            if not dd.empty:
+                fig3 = px.line(dd,x='날짜',y='학생수',color='어학과',
+                               title="어학과별 일별 추이",markers=True,
+                               color_discrete_sequence=px.colors.qualitative.Set2)
+                fig3.update_layout(plot_bgcolor='white',paper_bgcolor='white',height=320,margin=dict(t=40,b=20))
                 st.plotly_chart(fig3, use_container_width=True)
-        else:
-            empty_state("어학과 데이터가 없습니다.")
+
+        st.dataframe(ds, use_container_width=True)
 
 # ══════════════════════════════════════════════════
 # TAB 6: 담임용 조회
@@ -607,119 +580,90 @@ with tab5:
 with tab6:
     st.markdown("<div class='section-title'>👩‍🏫 담임용 우리 반 출석 조회</div>", unsafe_allow_html=True)
 
-    if df_all.empty:
-        empty_state("데이터가 없습니다.")
+    valid_all_g = sorted([int(g) for g in df_valid['학년'].dropna().unique()
+                          if is_valid(g) and str(g).replace('.0','').isdigit()]) if not df_valid.empty and '학년' in df_valid.columns else []
+
+    if not valid_all_g:
+        empty_state("유효한 학년 데이터가 없습니다. 학생 출석 후 다시 확인해 주세요.")
     else:
-        # 학년/반 선택
         hc1, hc2, hc3 = st.columns(3)
         with hc1:
-            valid_grades = sorted([int(g) for g in df_all['학년'].dropna().unique()
-                                   if str(g) not in ['미지정',''] and str(g).replace('.0','').isdigit()])
-            sel_hgrade = st.selectbox("학년", [f"{g}학년" for g in valid_grades], key='hgrade')
+            sel_hg = st.selectbox("학년", [f"{g}학년" for g in valid_all_g], key='hgrade')
+            h_gnum = int(sel_hg.replace('학년',''))
         with hc2:
-            h_gnum = int(sel_hgrade.replace('학년',''))
-            valid_klasses = sorted([int(k) for k in df_all[df_all['학년']==h_gnum]['반'].dropna().unique()
-                                    if str(k) not in ['미지정',''] and str(k).replace('.0','').isdigit()])
-            if valid_klasses:
-                sel_hklass = st.selectbox("반", [f"{k}반" for k in valid_klasses], key='hklass')
+            valid_hk = sorted([int(k) for k in df_valid[df_valid['학년']==h_gnum]['반'].dropna().unique()
+                if is_valid(k) and str(k).replace('.0','').isdigit()]) if '반' in df_valid.columns else []
+            if valid_hk:
+                sel_hk = st.selectbox("반", [f"{k}반" for k in valid_hk], key='hklass')
+                h_knum = int(sel_hk.replace('반',''))
             else:
-                st.info("반 데이터가 없습니다.")
-                sel_hklass = None
+                sel_hk = None; h_knum = None
+                empty_state("반 데이터 없음")
         with hc3:
             view_date = st.date_input("조회 날짜", value=today, key='hdate')
 
-        if sel_hklass:
-            h_knum   = int(sel_hklass.replace('반',''))
-            view_ts  = pd.Timestamp(view_date)
+        if sel_hk and h_knum:
+            view_ts = pd.Timestamp(view_date)
+            df_hr   = df_valid[(df_valid['날짜']==view_ts) &
+                               (df_valid['학년']==h_gnum) &
+                               (df_valid['반']==h_knum)] if '날짜' in df_valid.columns else pd.DataFrame()
 
-            # 해당 날짜 해당 반 출석 데이터
-            df_homeroom = df_all[
-                (df_all['날짜'] == view_ts) &
-                (df_all['학년'] == h_gnum) &
-                (df_all['반'] == h_knum)
-            ]
-
-            # 요약 메트릭
-            hm1, hm2, hm3 = st.columns(3)
-            with hm1: st.metric("출석 학생 수", f"{df_homeroom['이메일'].nunique() if not df_homeroom.empty else 0}명")
+            hm1,hm2,hm3 = st.columns(3)
+            with hm1: st.metric("출석 학생", f"{df_hr['이메일'].nunique() if not df_hr.empty and '이메일' in df_hr.columns else 0}명")
             with hm2:
-                p1_cnt = 0
-                if not df_homeroom.empty and '교시' in df_homeroom.columns:
-                    p1_cnt = df_homeroom[df_homeroom['교시']=='1교시']['이메일'].nunique()
-                st.metric("1교시", f"{p1_cnt}명")
+                p1c = df_hr[df_hr['교시']=='1교시']['이메일'].nunique() if not df_hr.empty and '교시' in df_hr.columns else 0
+                st.metric("1교시", f"{p1c}명")
             with hm3:
-                p2_cnt = 0
-                if not df_homeroom.empty and '교시' in df_homeroom.columns:
-                    p2_cnt = df_homeroom[df_homeroom['교시']=='2~3교시']['이메일'].nunique()
-                st.metric("2~3교시", f"{p2_cnt}명")
+                p2c = df_hr[df_hr['교시']=='2~3교시']['이메일'].nunique() if not df_hr.empty and '교시' in df_hr.columns else 0
+                st.metric("2~3교시", f"{p2c}명")
 
-            st.markdown("<div class='section-title'>출석 명단</div>", unsafe_allow_html=True)
-
-            if df_homeroom.empty:
+            st.markdown(f"**{view_date} {h_gnum}학년 {h_knum}반 출석 명단**")
+            if df_hr.empty:
                 empty_state(f"{view_date} {h_gnum}학년 {h_knum}반 출석 데이터가 없습니다.")
             else:
-                show_cols = [c for c in ['번호','이름','교시','좌석','시간','이메일'] if c in df_homeroom.columns]
-                sort_cols = [c for c in ['번호','교시'] if c in show_cols]
-                st.dataframe(
-                    df_homeroom[show_cols].sort_values(sort_cols) if sort_cols else df_homeroom[show_cols],
-                    use_container_width=True, height=400
-                )
+                sc = [c for c in ['번호','이름','교시','좌석','시간'] if c in df_hr.columns]
+                sb = [c for c in ['번호','교시'] if c in sc]
+                st.dataframe(df_hr[sc].sort_values(sb) if sb else df_hr[sc],
+                             use_container_width=True, height=360)
 
-            # 기간별 우리반 현황
-            st.markdown("<div class='section-title'>기간 내 우리 반 출석 현황</div>", unsafe_allow_html=True)
-            df_cls_period = df[
-                (df['학년'] == h_gnum) &
-                (df['반'] == h_knum)
-            ] if not df.empty and '학년' in df.columns and '반' in df.columns else pd.DataFrame()
-
-            if df_cls_period.empty:
-                empty_state("선택 기간에 우리 반 데이터가 없습니다.")
+            # 기간 내 우리 반
+            st.markdown(f"<div class='section-title'>기간 내 {h_gnum}학년 {h_knum}반 현황</div>",
+                        unsafe_allow_html=True)
+            df_cp = df[(df['학년']==h_gnum)&(df['반']==h_knum)] if not df.empty and '학년' in df.columns else pd.DataFrame()
+            if df_cp.empty:
+                empty_state("선택 기간 우리 반 데이터가 없습니다.")
             else:
-                # 학생별 출석 횟수
-                if '이름' in df_cls_period.columns and '이메일' in df_cls_period.columns:
-                    grp_cols = [c for c in ['번호','이름'] if c in df_cls_period.columns]
-                    stu_att = (df_cls_period.groupby(grp_cols)
-                               .agg(총체크인=('날짜','count'), 출석일수=('날짜','nunique'))
-                               .reset_index()
-                               .sort_values(grp_cols[0] if grp_cols else '이름'))
-                    st.markdown(f"**{h_gnum}학년 {h_knum}반 학생별 출석 현황** ({start_date} ~ {end_date})")
-                    st.dataframe(stu_att, use_container_width=True, height=350)
+                if '이름' in df_cp.columns:
+                    gc = [c for c in ['번호','이름'] if c in df_cp.columns]
+                    sa = (df_cp.groupby(gc).agg(총체크인=('날짜','count'),출석일수=('날짜','nunique'))
+                          .reset_index().sort_values(gc[0]))
+                    st.dataframe(sa, use_container_width=True, height=320)
+                if '날짜' in df_cp.columns and '이메일' in df_cp.columns:
+                    dc = (df_cp.groupby('날짜')['이메일'].nunique()
+                          .reset_index().rename(columns={'이메일':'학생수'}))
+                    figc = px.bar(dc,x='날짜',y='학생수',
+                                  title=f"{h_gnum}학년 {h_knum}반 일별 출석",
+                                  color_discrete_sequence=['#2d7ef7'])
+                    figc.update_layout(plot_bgcolor='white',paper_bgcolor='white',
+                        height=260,margin=dict(t=40,b=20))
+                    st.plotly_chart(figc, use_container_width=True)
 
-                # 일별 출석 추이
-                if '날짜' in df_cls_period.columns and '이메일' in df_cls_period.columns:
-                    daily_cls = (df_cls_period.groupby('날짜')['이메일']
-                                 .nunique().reset_index().rename(columns={'이메일':'학생수'}))
-                    fig_cls = px.bar(daily_cls, x='날짜', y='학생수',
-                                     title=f"{h_gnum}학년 {h_knum}반 일별 출석 학생 수",
-                                     color_discrete_sequence=['#2d7ef7'])
-                    fig_cls.update_layout(plot_bgcolor='white', paper_bgcolor='white',
-                        height=280, margin=dict(t=40,b=20))
-                    st.plotly_chart(fig_cls, use_container_width=True)
-
-# ── 학생 개인 검색 ────────────────────────────────────
+# ── 검색 ─────────────────────────────────────────────
 st.markdown("---")
 st.markdown("<div class='section-title'>🔍 학생 개인 검색</div>", unsafe_allow_html=True)
-
-search = st.text_input("이름 또는 이메일로 검색",
-                       placeholder="예: 홍길동 또는 student@hyfl.hs.kr")
-if search:
-    if df.empty:
-        empty_state("검색할 데이터가 없습니다.")
+search = st.text_input("이름 또는 이메일로 검색", placeholder="예: 홍길동 또는 student@hyfl.hs.kr")
+if search and not df.empty:
+    mask = pd.Series([False]*len(df), index=df.index)
+    if '이름'  in df.columns: mask = mask | df['이름'].astype(str).str.contains(search,na=False)
+    if '이메일' in df.columns: mask = mask | df['이메일'].astype(str).str.contains(search,na=False)
+    ds = df[mask]
+    if ds.empty:
+        empty_state(f"'{search}' 검색 결과가 없습니다.")
     else:
-        mask = pd.Series([False] * len(df), index=df.index)
-        if '이름'  in df.columns: mask = mask | df['이름'].astype(str).str.contains(search, na=False)
-        if '이메일' in df.columns: mask = mask | df['이메일'].astype(str).str.contains(search, na=False)
-
-        df_s = df[mask]
-        if df_s.empty:
-            empty_state(f"'{search}' 검색 결과가 없습니다.")
-        else:
-            s1, s2, s3 = st.columns(3)
-            with s1: st.metric("총 체크인", f"{len(df_s)}건")
-            with s2: st.metric("출석 일수", f"{safe_nunique(df_s.get('날짜', pd.Series()))}일")
-            with s3: st.metric("참여 교시 수", f"{safe_nunique(df_s.get('교시', pd.Series()))}종류")
-
-            show_cols = [c for c in ['날짜','교시','좌석','학년','반','번호','이름','이메일','시간']
-                         if c in df_s.columns]
-            st.dataframe(df_s[show_cols].sort_values('날짜', ascending=False),
-                         use_container_width=True, height=300)
+        s1,s2,s3 = st.columns(3)
+        with s1: st.metric("총 체크인", f"{len(ds)}건")
+        with s2: st.metric("출석 일수", f"{ds['날짜'].nunique() if '날짜' in ds.columns else 0}일")
+        with s3: st.metric("교시 종류", f"{ds['교시'].nunique() if '교시' in ds.columns else 0}종류")
+        sc = [c for c in ['날짜','교시','좌석','학년','반','번호','이름','시간'] if c in ds.columns]
+        st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
+                     use_container_width=True, height=300)
