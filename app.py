@@ -123,13 +123,14 @@ with st.sidebar:
     st.markdown("### 🏫 한영외고 야자 대시보드")
     st.markdown("---")
     st.markdown("#### 📊 데이터 연결")
-    sheet_key = st.text_input("Google Sheet Key",
-        value=st.session_state.get("sheet_key",""), placeholder="스프레드시트 ID")
-    ws_name = st.text_input("워크시트 이름",
-        value=st.session_state.get("ws_name","출석기록"))
-    if sheet_key:
-        st.session_state["sheet_key"] = sheet_key
-        st.session_state["ws_name"]   = ws_name
+    FIXED_KEY  = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
+    FIXED_WS   = "출석기록"
+    st.text_input("Google Sheet Key", value=FIXED_KEY, disabled=True)
+    st.text_input("워크시트 이름",     value=FIXED_WS,  disabled=True)
+    sheet_key = FIXED_KEY
+    ws_name   = FIXED_WS
+    st.session_state["sheet_key"] = sheet_key
+    st.session_state["ws_name"]   = ws_name
 
     st.markdown("---")
     st.markdown("#### 📅 기간 설정")
@@ -243,25 +244,40 @@ with tab1:
     p2_vals = data_table['2~3교시']
     tot_vals= data_table['합계']
 
-    # 헤더 행
-    hd0, hd1, hd2, hd3 = st.columns([1,1,1,1])
-    with hd0: st.markdown("<p style='color:#6b7280;font-weight:600;font-size:0.9rem;margin:0'>학년</p>", unsafe_allow_html=True)
-    with hd1: st.markdown("<p style='color:#2d7ef7;font-weight:700;font-size:0.9rem;margin:0'>1교시<br><small>16:10~17:40</small></p>", unsafe_allow_html=True)
-    with hd2: st.markdown("<p style='color:#7c3aed;font-weight:700;font-size:0.9rem;margin:0'>2~3교시<br><small>18:40~21:50</small></p>", unsafe_allow_html=True)
-    with hd3: st.markdown("<p style='color:#059669;font-weight:700;font-size:0.9rem;margin:0'>합계</p>", unsafe_allow_html=True)
-
-    st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
-
+    # HTML 테이블로 완전 정렬
+    tbody = ""
     for label, v1, v2, vt in zip(rows, p1_vals, p2_vals, tot_vals):
-        is_total = label == '✅ 전체'
+        is_total = (label == '✅ 전체')
         bg = "#f0fdf4" if is_total else "white"
-        fw = "700" if is_total else "500"
-        r0,r1,r2,r3 = st.columns([1,1,1,1])
-        with r0: st.markdown(f"<p style='font-weight:{fw};font-size:1rem;padding:8px 0;margin:0;background:{bg};border-radius:8px;padding-left:8px'>{label}</p>", unsafe_allow_html=True)
-        with r1: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#2d7ef7;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{v1}명</p>", unsafe_allow_html=True)
-        with r2: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#7c3aed;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{v2}명</p>", unsafe_allow_html=True)
-        with r3: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#059669;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{vt}명</p>", unsafe_allow_html=True)
-        st.markdown("<hr style='margin:2px 0;opacity:0.3'>", unsafe_allow_html=True)
+        fw = "700"     if is_total else "500"
+        fs = "1.3rem"  if is_total else "1.5rem"
+        tbody += (
+            "<tr style='background:" + bg + "'>"
+            "<td style='padding:14px 20px;font-weight:" + fw + ";font-size:1rem;"
+            "border-bottom:1px solid #f3f4f6'>" + label + "</td>"
+            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
+            "font-size:" + fs + ";color:#2d7ef7;border-bottom:1px solid #f3f4f6'>" + str(v1) + "명</td>"
+            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
+            "font-size:" + fs + ";color:#7c3aed;border-bottom:1px solid #f3f4f6'>" + str(v2) + "명</td>"
+            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
+            "font-size:" + fs + ";color:#059669;border-bottom:1px solid #f3f4f6'>" + str(vt) + "명</td>"
+            "</tr>"
+        )
+
+    table_html = (
+        "<table style='width:100%;border-collapse:collapse;border-radius:16px;overflow:hidden;"
+        "box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:20px'>"
+        "<thead><tr style='background:#1d3a6e;color:white'>"
+        "<th style='padding:14px 20px;text-align:left;font-size:0.95rem;width:20%'>학년</th>"
+        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:27%'>"
+        "1교시<br><span style='font-size:0.75rem;opacity:0.85'>16:10 ~ 17:40</span></th>"
+        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:27%'>"
+        "2~3교시<br><span style='font-size:0.75rem;opacity:0.85'>18:40 ~ 21:50</span></th>"
+        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:26%'>합계</th>"
+        "</tr></thead>"
+        "<tbody>" + tbody + "</tbody></table>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
