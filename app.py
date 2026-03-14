@@ -211,23 +211,59 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: 오늘 현황 — 학년별 숫자 중심
 # ══════════════════════════════════════════════════
 with tab1:
-    today_ts  = pd.Timestamp(today)
-    df_today  = df_all[df_all['날짜']==today_ts] if '날짜' in df_all.columns else pd.DataFrame()
+    today_ts   = pd.Timestamp(today)
+    df_today   = df_all[df_all['날짜']==today_ts] if '날짜' in df_all.columns else pd.DataFrame()
     df_today_v = filter_valid(df_today)
 
     st.markdown("<div class='section-title'>📊 오늘 출석 현황</div>", unsafe_allow_html=True)
 
-    # 전체 요약
-    total_today = df_today_v['이메일'].nunique() if not df_today_v.empty and '이메일' in df_today_v.columns else 0
-    g1 = df_today_v[df_today_v['학년']==1]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
-    g2 = df_today_v[df_today_v['학년']==2]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
-    g3 = df_today_v[df_today_v['학년']==3]['이메일'].nunique() if not df_today_v.empty and '학년' in df_today_v.columns else 0
+    # ── 교시별 × 학년별 집계표 ──────────────────────────
+    def cnt(df_t, grade=None, period=None):
+        d = df_t.copy()
+        if grade  and '학년' in d.columns: d = d[d['학년']==grade]
+        if period and '교시' in d.columns: d = d[d['교시']==period]
+        return d['이메일'].nunique() if '이메일' in d.columns and not d.empty else 0
 
-    c0, c1, c2, c3 = st.columns(4)
-    with c0: st.metric("🏫 전체", f"{total_today}명")
-    with c1: st.metric("1️⃣ 1학년", f"{g1}명")
-    with c2: st.metric("2️⃣ 2학년", f"{g2}명")
-    with c3: st.metric("3️⃣ 3학년", f"{g3}명")
+    p1_label  = '1교시'
+    p2_label  = '2~3교시'
+
+    # 학년 × 교시 숫자 계산
+    data_table = {
+        '학년':      ['1학년', '2학년', '3학년', '✅ 전체'],
+        '1교시':     [cnt(df_today_v,1,p1_label), cnt(df_today_v,2,p1_label),
+                      cnt(df_today_v,3,p1_label), cnt(df_today_v,None,p1_label)],
+        '2~3교시':   [cnt(df_today_v,1,p2_label), cnt(df_today_v,2,p2_label),
+                      cnt(df_today_v,3,p2_label), cnt(df_today_v,None,p2_label)],
+    }
+    data_table['합계'] = [a+b for a,b in zip(data_table['1교시'], data_table['2~3교시'])]
+
+    # 큰 숫자 카드로 표시
+    rows    = data_table['학년']
+    p1_vals = data_table['1교시']
+    p2_vals = data_table['2~3교시']
+    tot_vals= data_table['합계']
+
+    # 헤더 행
+    hd0, hd1, hd2, hd3 = st.columns([1,1,1,1])
+    with hd0: st.markdown("<p style='color:#6b7280;font-weight:600;font-size:0.9rem;margin:0'>학년</p>", unsafe_allow_html=True)
+    with hd1: st.markdown("<p style='color:#2d7ef7;font-weight:700;font-size:0.9rem;margin:0'>1교시<br><small>16:10~17:40</small></p>", unsafe_allow_html=True)
+    with hd2: st.markdown("<p style='color:#7c3aed;font-weight:700;font-size:0.9rem;margin:0'>2~3교시<br><small>18:40~21:50</small></p>", unsafe_allow_html=True)
+    with hd3: st.markdown("<p style='color:#059669;font-weight:700;font-size:0.9rem;margin:0'>합계</p>", unsafe_allow_html=True)
+
+    st.markdown("<hr style='margin:6px 0'>", unsafe_allow_html=True)
+
+    for label, v1, v2, vt in zip(rows, p1_vals, p2_vals, tot_vals):
+        is_total = label == '✅ 전체'
+        bg = "#f0fdf4" if is_total else "white"
+        fw = "700" if is_total else "500"
+        r0,r1,r2,r3 = st.columns([1,1,1,1])
+        with r0: st.markdown(f"<p style='font-weight:{fw};font-size:1rem;padding:8px 0;margin:0;background:{bg};border-radius:8px;padding-left:8px'>{label}</p>", unsafe_allow_html=True)
+        with r1: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#2d7ef7;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{v1}명</p>", unsafe_allow_html=True)
+        with r2: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#7c3aed;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{v2}명</p>", unsafe_allow_html=True)
+        with r3: st.markdown(f"<p style='font-weight:{fw};font-size:1.4rem;color:#059669;text-align:center;margin:0;background:{bg};border-radius:8px;padding:4px 0'>{vt}명</p>", unsafe_allow_html=True)
+        st.markdown("<hr style='margin:2px 0;opacity:0.3'>", unsafe_allow_html=True)
+
+    st.markdown("<br>", unsafe_allow_html=True)
 
     if df_today_v.empty:
         empty_state("오늘 출석 데이터가 없습니다.")
@@ -266,16 +302,6 @@ with tab1:
                     st.plotly_chart(fig2, use_container_width=True)
                 else:
                     empty_state("반별 데이터 없음")
-
-        # 교시별
-        st.markdown("<div class='section-title'>교시별 현황</div>", unsafe_allow_html=True)
-        ec1, ec2 = st.columns(2)
-        with ec1:
-            p1 = df_today_v[df_today_v['교시']=='1교시']['이메일'].nunique() if '교시' in df_today_v.columns else 0
-            st.metric("1교시 참여", f"{p1}명")
-        with ec2:
-            p2 = df_today_v[df_today_v['교시']=='2~3교시']['이메일'].nunique() if '교시' in df_today_v.columns else 0
-            st.metric("2~3교시 참여", f"{p2}명")
 
         # 오늘 명단
         st.markdown("<div class='section-title'>오늘 출석 명단</div>", unsafe_allow_html=True)
