@@ -441,19 +441,30 @@ with tab3:
                     use_container_width=True, height=380)
 
         st.markdown("<div class='section-title'>반 상세 보기</div>", unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        with c1:
-            sel_g2 = st.selectbox("학년", [f"{g}학년" for g in grades], key='drill_g')
-        with c2:
-            g_num2  = int(sel_g2.replace('학년',''))
-            klasses = sorted(df[df['학년']==g_num2]['반'].dropna().unique().astype(int).tolist()) if '반' in df.columns else []
-            if klasses:
-                sel_k = st.selectbox("반", [f"{k}반" for k in klasses], key='drill_k')
-            else:
-                sel_k = None
-                empty_state("반 데이터가 없습니다.")
 
-        if sel_k:
+        # 유효한 학년만 (미지정 제외)
+        valid_grades_drill = sorted([int(g) for g in df['학년'].dropna().unique()
+            if str(g) not in ['미지정',''] and str(g).replace('.0','').isdigit()]) if '학년' in df.columns else []
+
+        if not valid_grades_drill:
+            empty_state("유효한 학년 데이터가 없습니다.")
+            sel_k = None
+            g_num2 = None
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                sel_g2 = st.selectbox("학년", [f"{g}학년" for g in valid_grades_drill], key='drill_g')
+                g_num2 = int(sel_g2.replace('학년',''))
+            with c2:
+                klasses = sorted([int(k) for k in df[df['학년']==g_num2]['반'].dropna().unique()
+                    if str(k) not in ['미지정',''] and str(k).replace('.0','').isdigit()]) if '반' in df.columns else []
+                if klasses:
+                    sel_k = st.selectbox("반", [f"{k}반" for k in klasses], key='drill_k')
+                else:
+                    sel_k = None
+                    empty_state("반 데이터가 없습니다.")
+
+        if sel_k and g_num2:
             k_num  = int(sel_k.replace('반',''))
             df_cls = df[(df['학년']==g_num2) & (df['반']==k_num)]
             if df_cls.empty:
