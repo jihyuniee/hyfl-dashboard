@@ -7,15 +7,7 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="한영외고 야자 대시보드", page_icon="🏫", layout="wide",
-                   initial_sidebar_state="expanded")
-
-# 사이드바 항상 표시
-st.markdown("""
-<style>
-    [data-testid="collapsedControl"] { display: none !important; }
-    section[data-testid="stSidebar"] { display: block !important; min-width: 280px !important; }
-</style>
-""", unsafe_allow_html=True)
+                   initial_sidebar_state="collapsed")
 
 st.markdown("""
 <style>
@@ -126,54 +118,47 @@ def filter_period(df, start, end):
     if df.empty or '날짜' not in df.columns: return df
     return df[(df['날짜']>=pd.Timestamp(start)) & (df['날짜']<=pd.Timestamp(end))].copy()
 
-# ── 사이드바 ──────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### 🏫 한영외고 야자 대시보드")
-    st.markdown("---")
-    st.markdown("#### 📊 데이터 연결")
-    FIXED_KEY  = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
-    FIXED_WS   = "출석기록"
-    st.text_input("Google Sheet Key", value=FIXED_KEY, disabled=True)
-    st.text_input("워크시트 이름",     value=FIXED_WS,  disabled=True)
-    sheet_key = FIXED_KEY
-    ws_name   = FIXED_WS
-    st.session_state["sheet_key"] = sheet_key
-    st.session_state["ws_name"]   = ws_name
+# ── 고정값 설정 ───────────────────────────────────────
+sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
+ws_name   = "출석기록"
+today     = datetime.now().date()
 
-    st.markdown("---")
-    st.markdown("#### 📅 기간 설정")
-    today = datetime.now().date()
-    if "date_start" not in st.session_state:
-        st.session_state.date_start = today - timedelta(days=today.weekday())
-    if "date_end" not in st.session_state:
-        st.session_state.date_end = today
+if "date_start" not in st.session_state:
+    st.session_state.date_start = today - timedelta(days=today.weekday())
+if "date_end" not in st.session_state:
+    st.session_state.date_end = today
 
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("이번 주",  use_container_width=True):
-            s,e = get_week_range(0);  st.session_state.date_start=s; st.session_state.date_end=e
-        if st.button("지난 주",  use_container_width=True):
-            s,e = get_week_range(-1); st.session_state.date_start=s; st.session_state.date_end=e
-    with c2:
-        if st.button("이번 달",  use_container_width=True):
-            st.session_state.date_start=today.replace(day=1); st.session_state.date_end=today
-        if st.button("전체 기간", use_container_width=True):
-            st.session_state.date_start=today.replace(year=today.year-1); st.session_state.date_end=today
-
-    dr = st.date_input("직접 설정",
-        value=(st.session_state.date_start, st.session_state.date_end), format="YYYY/MM/DD")
+# ── 상단 컨트롤 바 ────────────────────────────────────
+st.markdown("---")
+ctrl1, ctrl2, ctrl3, ctrl4, ctrl5, ctrl6 = st.columns([1,1,1,1,2,1])
+with ctrl1:
+    if st.button("📅 이번 주", use_container_width=True):
+        s,e = get_week_range(0); st.session_state.date_start=s; st.session_state.date_end=e; st.rerun()
+with ctrl2:
+    if st.button("📅 지난 주", use_container_width=True):
+        s,e = get_week_range(-1); st.session_state.date_start=s; st.session_state.date_end=e; st.rerun()
+with ctrl3:
+    if st.button("📅 이번 달", use_container_width=True):
+        st.session_state.date_start=today.replace(day=1); st.session_state.date_end=today; st.rerun()
+with ctrl4:
+    if st.button("📅 전체",    use_container_width=True):
+        st.session_state.date_start=today.replace(year=today.year-1); st.session_state.date_end=today; st.rerun()
+with ctrl5:
+    dr = st.date_input("기간 직접 설정",
+        value=(st.session_state.date_start, st.session_state.date_end),
+        format="YYYY/MM/DD", label_visibility="collapsed")
     if isinstance(dr,(list,tuple)) and len(dr)==2:
         start_date, end_date = dr
         st.session_state.date_start=start_date; st.session_state.date_end=end_date
     else:
         start_date = end_date = st.session_state.date_start
-
-    st.markdown(f"<small style='color:#6b7280'>📌 {start_date} ~ {end_date}</small>", unsafe_allow_html=True)
-    st.markdown("---")
+with ctrl6:
     if st.button("🔄 새로고침", use_container_width=True):
         st.cache_data.clear(); st.rerun()
-    st.markdown(f"<small style='color:#9ca3af'>업데이트: {datetime.now().strftime('%H:%M:%S')}</small>",
-                unsafe_allow_html=True)
+
+start_date = st.session_state.date_start
+end_date   = st.session_state.date_end
+st.markdown("---")
 
 # ── 데이터 로드 ───────────────────────────────────────
 if not sheet_key:
