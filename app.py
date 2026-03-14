@@ -237,8 +237,8 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ── 탭 ───────────────────────────────────────────────
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🏠 오늘 현황", "📈 주차별 추이", "🏫 학년·반별", "🌍 어학과별", "📅 요일별 분석"
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🏠 오늘 현황", "📈 주차별 추이", "🏫 학년·반별", "🌍 어학과별", "📅 요일별 분석", "👩‍🏫 담임용 조회"
 ])
 
 # ══════════════════════════════════════════════════
@@ -288,7 +288,13 @@ with tab1:
             if '학년' in df_today.columns and '반' in df_today.columns and '이메일' in df_today.columns:
                 cd = (df_today.groupby(['학년','반'])['이메일'].nunique()
                       .reset_index().rename(columns={'이메일':'학생수'}))
-                cd['반명'] = cd.apply(lambda r: f"{int(r['학년'])}-{int(r['반'])}반", axis=1)
+                cd = cd.dropna(subset=['학년','반'])
+                cd = cd[~cd['학년'].astype(str).isin(['미지정',''])]
+                cd = cd[~cd['반'].astype(str).isin(['미지정',''])]
+                def safe_label_cd(r):
+                    try: return f"{int(r['학년'])}-{int(r['반'])}반"
+                    except: return "미확인"
+                cd['반명'] = cd.apply(safe_label_cd, axis=1)
                 fig2 = px.bar(cd, x='반명', y='학생수', color='학년',
                               text='학생수', title="반별 참여 인원",
                               color_continuous_scale='Blues')
@@ -402,7 +408,21 @@ with tab3:
             summary = (df_g.groupby(['학년','반'])
                        .agg(체크인수=('이메일','count'), 고유학생수=('이메일','nunique'))
                        .reset_index().sort_values(['학년','반']))
-            summary['반명'] = summary.apply(lambda r: f"{int(r['학년'])}-{int(r['반'])}반", axis=1)
+            summary = summary.dropna(subset=['학년','반'])
+            summary = summary[summary['학년'].astype(str) != '미지정']
+            summary = summary[summary['반'].astype(str) != '미지정']
+            def make_label(r):
+                try:
+                    return f"{int(r['학년'])}-{int(r['반'])}반"
+                except:
+                    return "미확인"
+            summary = summary.dropna(subset=['학년','반'])
+            summary = summary[~summary['학년'].astype(str).isin(['미지정',''])]
+            summary = summary[~summary['반'].astype(str).isin(['미지정',''])]
+            def safe_label(r):
+                try: return f"{int(r['학년'])}-{int(r['반'])}반"
+                except: return "미확인"
+            summary['반명'] = summary.apply(safe_label, axis=1)
 
             col_l, col_r = st.columns([3,2])
             with col_l:
@@ -569,6 +589,101 @@ with tab5:
                 st.plotly_chart(fig3, use_container_width=True)
         else:
             empty_state("어학과 데이터가 없습니다.")
+
+# ══════════════════════════════════════════════════
+# TAB 6: 담임용 조회
+# ══════════════════════════════════════════════════
+with tab6:
+    st.markdown("<div class='section-title'>👩‍🏫 담임용 우리 반 출석 조회</div>", unsafe_allow_html=True)
+
+    if df_all.empty:
+        empty_state("데이터가 없습니다.")
+    else:
+        # 학년/반 선택
+        hc1, hc2, hc3 = st.columns(3)
+        with hc1:
+            valid_grades = sorted([int(g) for g in df_all['학년'].dropna().unique()
+                                   if str(g) not in ['미지정',''] and str(g).replace('.0','').isdigit()])
+            sel_hgrade = st.selectbox("학년", [f"{g}학년" for g in valid_grades], key='hgrade')
+        with hc2:
+            h_gnum = int(sel_hgrade.replace('학년',''))
+            valid_klasses = sorted([int(k) for k in df_all[df_all['학년']==h_gnum]['반'].dropna().unique()
+                                    if str(k) not in ['미지정',''] and str(k).replace('.0','').isdigit()])
+            if valid_klasses:
+                sel_hklass = st.selectbox("반", [f"{k}반" for k in valid_klasses], key='hklass')
+            else:
+                st.info("반 데이터가 없습니다.")
+                sel_hklass = None
+        with hc3:
+            view_date = st.date_input("조회 날짜", value=today, key='hdate')
+
+        if sel_hklass:
+            h_knum   = int(sel_hklass.replace('반',''))
+            view_ts  = pd.Timestamp(view_date)
+
+            # 해당 날짜 해당 반 출석 데이터
+            df_homeroom = df_all[
+                (df_all['날짜'] == view_ts) &
+                (df_all['학년'] == h_gnum) &
+                (df_all['반'] == h_knum)
+            ]
+
+            # 요약 메트릭
+            hm1, hm2, hm3 = st.columns(3)
+            with hm1: st.metric("출석 학생 수", f"{df_homeroom['이메일'].nunique() if not df_homeroom.empty else 0}명")
+            with hm2:
+                p1_cnt = 0
+                if not df_homeroom.empty and '교시' in df_homeroom.columns:
+                    p1_cnt = df_homeroom[df_homeroom['교시']=='1교시']['이메일'].nunique()
+                st.metric("1교시", f"{p1_cnt}명")
+            with hm3:
+                p2_cnt = 0
+                if not df_homeroom.empty and '교시' in df_homeroom.columns:
+                    p2_cnt = df_homeroom[df_homeroom['교시']=='2~3교시']['이메일'].nunique()
+                st.metric("2~3교시", f"{p2_cnt}명")
+
+            st.markdown("<div class='section-title'>출석 명단</div>", unsafe_allow_html=True)
+
+            if df_homeroom.empty:
+                empty_state(f"{view_date} {h_gnum}학년 {h_knum}반 출석 데이터가 없습니다.")
+            else:
+                show_cols = [c for c in ['번호','이름','교시','좌석','시간','이메일'] if c in df_homeroom.columns]
+                sort_cols = [c for c in ['번호','교시'] if c in show_cols]
+                st.dataframe(
+                    df_homeroom[show_cols].sort_values(sort_cols) if sort_cols else df_homeroom[show_cols],
+                    use_container_width=True, height=400
+                )
+
+            # 기간별 우리반 현황
+            st.markdown("<div class='section-title'>기간 내 우리 반 출석 현황</div>", unsafe_allow_html=True)
+            df_cls_period = df[
+                (df['학년'] == h_gnum) &
+                (df['반'] == h_knum)
+            ] if not df.empty and '학년' in df.columns and '반' in df.columns else pd.DataFrame()
+
+            if df_cls_period.empty:
+                empty_state("선택 기간에 우리 반 데이터가 없습니다.")
+            else:
+                # 학생별 출석 횟수
+                if '이름' in df_cls_period.columns and '이메일' in df_cls_period.columns:
+                    grp_cols = [c for c in ['번호','이름'] if c in df_cls_period.columns]
+                    stu_att = (df_cls_period.groupby(grp_cols)
+                               .agg(총체크인=('날짜','count'), 출석일수=('날짜','nunique'))
+                               .reset_index()
+                               .sort_values(grp_cols[0] if grp_cols else '이름'))
+                    st.markdown(f"**{h_gnum}학년 {h_knum}반 학생별 출석 현황** ({start_date} ~ {end_date})")
+                    st.dataframe(stu_att, use_container_width=True, height=350)
+
+                # 일별 출석 추이
+                if '날짜' in df_cls_period.columns and '이메일' in df_cls_period.columns:
+                    daily_cls = (df_cls_period.groupby('날짜')['이메일']
+                                 .nunique().reset_index().rename(columns={'이메일':'학생수'}))
+                    fig_cls = px.bar(daily_cls, x='날짜', y='학생수',
+                                     title=f"{h_gnum}학년 {h_knum}반 일별 출석 학생 수",
+                                     color_discrete_sequence=['#2d7ef7'])
+                    fig_cls.update_layout(plot_bgcolor='white', paper_bgcolor='white',
+                        height=280, margin=dict(t=40,b=20))
+                    st.plotly_chart(fig_cls, use_container_width=True)
 
 # ── 학생 개인 검색 ────────────────────────────────────
 st.markdown("---")
