@@ -9,6 +9,14 @@ from google.oauth2.service_account import Credentials
 st.set_page_config(page_title="한영외고 야자 대시보드", page_icon="🏫", layout="wide",
                    initial_sidebar_state="expanded")
 
+# 사이드바 항상 표시
+st.markdown("""
+<style>
+    [data-testid="collapsedControl"] { display: none !important; }
+    section[data-testid="stSidebar"] { display: block !important; min-width: 280px !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.markdown("""
 <style>
     html, body, [class*="css"] { font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
