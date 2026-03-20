@@ -205,27 +205,36 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: 오늘 현황 — 학년별 숫자 중심
 # ══════════════════════════════════════════════════
 with tab1:
-    # ── 날짜 선택기 추가 ──────────────────────────────
-    col_date, col_spacer = st.columns([2, 5])
-    with col_date:
+    # ── 날짜 선택 (Streamlit date_input 숨기고 커스텀 UI) ──
+    col_badge, col_spacer, col_cal = st.columns([3, 4, 2])
+    with col_badge:
+        st.markdown("""
+        <div style='display:flex;align-items:center;gap:8px;margin-top:8px'>
+          <span style='font-size:1.1rem;font-weight:700;color:#1d3a6e'>📊 출석 현황</span>
+        </div>
+        """, unsafe_allow_html=True)
+    with col_cal:
         selected_day = st.date_input(
-            "📅 날짜 선택",
-            value=today,
-            max_value=today,
-            format="YYYY/MM/DD"
+            "", value=today, max_value=today,
+            format="YYYY/MM/DD", label_visibility="collapsed"
         )
 
-    # today_ts를 선택한 날짜로 변경
+    # 날짜 배지
+    dow_map = {0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'}
+    dow = dow_map[selected_day.weekday()]
+    is_today = selected_day == today
+    badge_text = f"📅 {selected_day.year}년 {selected_day.month}월 {selected_day.day}일 ({dow}){' · 오늘' if is_today else ''}"
+    st.markdown(f"""
+    <div style='display:flex;align-items:center;gap:10px;margin-bottom:16px'>
+      <span style='background:#eff6ff;border:1.5px solid #3b82f6;border-radius:20px;
+        padding:4px 14px;font-size:12px;font-weight:600;color:#3b82f6'>{badge_text}</span>
+    </div>
+    <hr style='border:none;border-top:2px solid #3b82f6;margin-bottom:16px'>
+    """, unsafe_allow_html=True)
+
     today_ts   = pd.Timestamp(selected_day)
     df_today   = df_all[df_all['날짜']==today_ts] if '날짜' in df_all.columns else pd.DataFrame()
     df_today_v = filter_valid(df_today)
-
-    # 오늘인지 아닌지에 따라 타이틀 변경
-    if selected_day == today:
-        title_label = "📊 오늘 출석 현황"
-    else:
-        title_label = f"📊 {selected_day.strftime('%Y년 %m월 %d일')} 출석 현황"
-    st.markdown(f"<div class='section-title'>{title_label}</div>", unsafe_allow_html=True)
 
     # ── 교시별 × 학년별 집계표 ──────────────────────────
     def cnt(df_t, grade=None, period=None):
@@ -234,67 +243,60 @@ with tab1:
         if period and '교시' in d.columns: d = d[d['교시']==period]
         return d['이메일'].nunique() if '이메일' in d.columns and not d.empty else 0
 
-    p1_label  = '1교시'
-    p2_label  = '2~3교시'
+    p1_label = '1교시'
+    p2_label = '2~3교시'
 
-    # 학년 × 교시 숫자 계산
     data_table = {
-        '학년':      ['1학년', '2학년', '3학년', '✅ 전체'],
-        '1교시':     [cnt(df_today_v,1,p1_label), cnt(df_today_v,2,p1_label),
-                      cnt(df_today_v,3,p1_label), cnt(df_today_v,None,p1_label)],
-        '2~3교시':   [cnt(df_today_v,1,p2_label), cnt(df_today_v,2,p2_label),
-                      cnt(df_today_v,3,p2_label), cnt(df_today_v,None,p2_label)],
+        '학년':    ['1학년','2학년','3학년','✅ 전체'],
+        '1교시':   [cnt(df_today_v,1,p1_label), cnt(df_today_v,2,p1_label),
+                    cnt(df_today_v,3,p1_label), cnt(df_today_v,None,p1_label)],
+        '2~3교시': [cnt(df_today_v,1,p2_label), cnt(df_today_v,2,p2_label),
+                    cnt(df_today_v,3,p2_label), cnt(df_today_v,None,p2_label)],
     }
     data_table['합계'] = [a+b for a,b in zip(data_table['1교시'], data_table['2~3교시'])]
 
-    # 큰 숫자 카드로 표시
-    rows    = data_table['학년']
-    p1_vals = data_table['1교시']
-    p2_vals = data_table['2~3교시']
-    tot_vals= data_table['합계']
-
-    # HTML 테이블로 완전 정렬
     tbody = ""
-    for label, v1, v2, vt in zip(rows, p1_vals, p2_vals, tot_vals):
+    rows = list(zip(data_table['학년'], data_table['1교시'], data_table['2~3교시'], data_table['합계']))
+    for label, v1, v2, vt in rows:
         is_total = (label == '✅ 전체')
         bg = "#f0fdf4" if is_total else "white"
         fw = "700"     if is_total else "500"
-        fs = "1.3rem"  if is_total else "1.5rem"
-        tbody += (
-            "<tr style='background:" + bg + "'>"
-            "<td style='padding:14px 20px;font-weight:" + fw + ";font-size:1rem;"
-            "border-bottom:1px solid #f3f4f6'>" + label + "</td>"
-            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
-            "font-size:" + fs + ";color:#2d7ef7;border-bottom:1px solid #f3f4f6'>" + str(v1) + "명</td>"
-            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
-            "font-size:" + fs + ";color:#7c3aed;border-bottom:1px solid #f3f4f6'>" + str(v2) + "명</td>"
-            "<td style='padding:14px;text-align:center;font-weight:" + fw + ";"
-            "font-size:" + fs + ";color:#059669;border-bottom:1px solid #f3f4f6'>" + str(vt) + "명</td>"
-            "</tr>"
-        )
+        fs = "1.2rem"  if is_total else "1.4rem"
+        tbody += f"""
+        <tr style='background:{bg}'>
+          <td style='padding:16px 24px;font-weight:{fw};font-size:1rem;
+              border-bottom:1px solid #f3f4f6'>{label}</td>
+          <td style='padding:16px;text-align:center;font-weight:{fw};
+              font-size:{fs};color:#3b82f6;border-bottom:1px solid #f3f4f6'>{v1}명</td>
+          <td style='padding:16px;text-align:center;font-weight:{fw};
+              font-size:{fs};color:#8b5cf6;border-bottom:1px solid #f3f4f6'>{v2}명</td>
+          <td style='padding:16px;text-align:center;font-weight:{fw};
+              font-size:{fs};color:#10b981;border-bottom:1px solid #f3f4f6'>{vt}명</td>
+        </tr>"""
 
-    table_html = (
-        "<table style='width:100%;border-collapse:collapse;border-radius:16px;overflow:hidden;"
-        "box-shadow:0 2px 8px rgba(0,0,0,0.06);margin-bottom:20px'>"
-        "<thead><tr style='background:#1d3a6e;color:white'>"
-        "<th style='padding:14px 20px;text-align:left;font-size:0.95rem;width:20%'>학년</th>"
-        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:27%'>"
-        "1교시<br><span style='font-size:0.75rem;opacity:0.85'>16:10 ~ 17:40</span></th>"
-        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:27%'>"
-        "2~3교시<br><span style='font-size:0.75rem;opacity:0.85'>18:40 ~ 21:50</span></th>"
-        "<th style='padding:14px;text-align:center;font-size:0.95rem;width:26%'>합계</th>"
-        "</tr></thead>"
-        "<tbody>" + tbody + "</tbody></table>"
-    )
+    table_html = f"""
+    <table style='width:100%;border-collapse:collapse;border-radius:16px;overflow:hidden;
+        box-shadow:0 4px 24px rgba(26,47,90,0.08);margin-bottom:20px'>
+      <thead>
+        <tr style='background:#1d3a6e;color:white'>
+          <th style='padding:16px 24px;text-align:left;font-size:0.95rem;width:22%'>학년</th>
+          <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>
+            1교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>16:10 ~ 17:40</span></th>
+          <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>
+            2~3교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>18:40 ~ 21:50</span></th>
+          <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>합계</th>
+        </tr>
+      </thead>
+      <tbody>{tbody}</tbody>
+    </table>"""
     st.markdown(table_html, unsafe_allow_html=True)
 
+    # ── 이하 기존 차트/명단 코드 그대로 유지 ──────────────
     st.markdown("<br>", unsafe_allow_html=True)
-
     if df_today_v.empty:
-        empty_state("오늘 출석 데이터가 없습니다.")
+        empty_state("출석 데이터가 없습니다.")
     else:
         col_l, col_r = st.columns(2)
-
         with col_l:
             st.markdown("<div class='section-title'>학년별 참여 인원</div>", unsafe_allow_html=True)
             if '학년' in df_today_v.columns and '이메일' in df_today_v.columns:
@@ -328,14 +330,13 @@ with tab1:
                 else:
                     empty_state("반별 데이터 없음")
 
-        # 오늘 명단
-        st.markdown("<div class='section-title'>오늘 출석 명단</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>출석 명단</div>", unsafe_allow_html=True)
         show_cols = [c for c in ['학년','반','번호','이름','교시','좌석','시간'] if c in df_today_v.columns]
         if show_cols:
             sort_by = [c for c in ['학년','반','번호'] if c in show_cols]
-            st.dataframe(df_today_v[show_cols].sort_values(sort_by) if sort_by else df_today_v[show_cols],
-                         use_container_width=True, height=320)
-
+            st.dataframe(
+                df_today_v[show_cols].sort_values(sort_by) if sort_by else df_today_v[show_cols],
+                use_container_width=True, height=320)
 # ══════════════════════════════════════════════════
 # TAB 2: TOP3 시상
 # ══════════════════════════════════════════════════
