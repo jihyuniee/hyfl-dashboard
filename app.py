@@ -205,11 +205,27 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: 오늘 현황 — 학년별 숫자 중심
 # ══════════════════════════════════════════════════
 with tab1:
-    today_ts   = pd.Timestamp(today)
+    # ── 날짜 선택기 추가 ──────────────────────────────
+    col_date, col_spacer = st.columns([2, 5])
+    with col_date:
+        selected_day = st.date_input(
+            "📅 날짜 선택",
+            value=today,
+            max_value=today,
+            format="YYYY/MM/DD"
+        )
+
+    # today_ts를 선택한 날짜로 변경
+    today_ts   = pd.Timestamp(selected_day)
     df_today   = df_all[df_all['날짜']==today_ts] if '날짜' in df_all.columns else pd.DataFrame()
     df_today_v = filter_valid(df_today)
 
-    st.markdown("<div class='section-title'>📊 오늘 출석 현황</div>", unsafe_allow_html=True)
+    # 오늘인지 아닌지에 따라 타이틀 변경
+    if selected_day == today:
+        title_label = "📊 오늘 출석 현황"
+    else:
+        title_label = f"📊 {selected_day.strftime('%Y년 %m월 %d일')} 출석 현황"
+    st.markdown(f"<div class='section-title'>{title_label}</div>", unsafe_allow_html=True)
 
     # ── 교시별 × 학년별 집계표 ──────────────────────────
     def cnt(df_t, grade=None, period=None):
