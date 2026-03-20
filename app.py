@@ -212,20 +212,32 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: 오늘 현황
 # ══════════════════════════════════════════════════
 with tab1:
-    col_title_t1, col_spacer, col_cal = st.columns([3,3,2])
+    # session_state로 날짜 관리 (date_input key와 분리)
+    if "tab1_selected_day" not in st.session_state:
+        st.session_state["tab1_selected_day"] = today
+
+    col_title_t1, col_spacer, col_cal = st.columns([3, 3, 2])
     with col_title_t1:
         st.markdown("<div style='margin-top:8px;font-size:1.1rem;font-weight:700;color:#1d3a6e'>📊 출석 현황</div>",
                     unsafe_allow_html=True)
     with col_cal:
-        selected_day = st.date_input("", value=today, max_value=today,
-                                     format="YYYY/MM/DD", label_visibility="collapsed", key="tab1_date")
+        # key 없이 value만 사용 — session_state 직접 수정과 충돌 없음
+        picked = st.date_input("", value=st.session_state["tab1_selected_day"],
+                               max_value=today, format="YYYY/MM/DD",
+                               label_visibility="collapsed")
+        # picker로 직접 날짜 바꿨을 때 반영
+        if picked != st.session_state["tab1_selected_day"]:
+            st.session_state["tab1_selected_day"] = picked
+            st.rerun()
+
+    selected_day = st.session_state["tab1_selected_day"]
 
     dow_map = {0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'}
     dow = dow_map[selected_day.weekday()]
     is_today_flag = selected_day == today
     badge_text = f"📅 {selected_day.year}년 {selected_day.month}월 {selected_day.day}일 ({dow}){' · 오늘' if is_today_flag else ''}"
 
-    col_badge, col_shortcuts = st.columns([3,2])
+    col_badge, col_shortcuts = st.columns([3, 2])
     with col_badge:
         st.markdown(f"""<div style='margin-bottom:12px'>
           <span style='background:#eff6ff;border:1.5px solid #3b82f6;border-radius:20px;
@@ -235,10 +247,12 @@ with tab1:
         sc1, sc2 = st.columns(2)
         with sc1:
             if st.button("어제", use_container_width=True, key="tab1_yesterday"):
-                st.session_state["tab1_date"] = today - timedelta(days=1); st.rerun()
+                st.session_state["tab1_selected_day"] = today - timedelta(days=1)
+                st.rerun()
         with sc2:
             if st.button("오늘", use_container_width=True, key="tab1_today"):
-                st.session_state["tab1_date"] = today; st.rerun()
+                st.session_state["tab1_selected_day"] = today
+                st.rerun()
 
     st.markdown("<hr style='border:none;border-top:2px solid #3b82f6;margin-bottom:16px'>", unsafe_allow_html=True)
 
