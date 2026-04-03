@@ -85,6 +85,9 @@ def load_data(key, ws_name):
         for col in ['학년','반','번호']:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
+        # ★ 핵심: '2~3교시' → '3교시' 로 통일
+        if '교시' in df.columns:
+            df['교시'] = df['교시'].str.strip().replace('2~3교시', '3교시')
         def get_dept(k):
             try:
                 n = int(k)
@@ -212,7 +215,6 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # TAB 1: 오늘 현황
 # ══════════════════════════════════════════════════
 with tab1:
-    # session_state로 날짜 관리 (date_input key와 분리)
     if "tab1_selected_day" not in st.session_state:
         st.session_state["tab1_selected_day"] = today
 
@@ -221,11 +223,9 @@ with tab1:
         st.markdown("<div style='margin-top:8px;font-size:1.1rem;font-weight:700;color:#1d3a6e'>📊 출석 현황</div>",
                     unsafe_allow_html=True)
     with col_cal:
-        # key 없이 value만 사용 — session_state 직접 수정과 충돌 없음
         picked = st.date_input("", value=st.session_state["tab1_selected_day"],
                                max_value=today, format="YYYY/MM/DD",
                                label_visibility="collapsed")
-        # picker로 직접 날짜 바꿨을 때 반영
         if picked != st.session_state["tab1_selected_day"]:
             st.session_state["tab1_selected_day"] = picked
             st.rerun()
@@ -266,29 +266,33 @@ with tab1:
         if period and '교시' in d.columns: d = d[d['교시']==period]
         return d['이메일'].nunique() if '이메일' in d.columns and not d.empty else 0
 
-    p1_label = '1교시'; p2_label = '2~3교시'
+    # ★ 교시 라벨 통일: '3교시'
+    p1_label = '1교시'
+    p2_label = '3교시'
+
     data_table = {
-        '학년':    ['1학년','2학년','3학년','✅ 전체'],
-        '1교시':   [cnt(df_today_v,1,p1_label),cnt(df_today_v,2,p1_label),
-                    cnt(df_today_v,3,p1_label),cnt(df_today_v,None,p1_label)],
-        '2~3교시': [cnt(df_today_v,1,p2_label),cnt(df_today_v,2,p2_label),
-                    cnt(df_today_v,3,p2_label),cnt(df_today_v,None,p2_label)],
+        '학년':   ['1학년','2학년','3학년','✅ 전체'],
+        '1교시':  [cnt(df_today_v,1,p1_label),cnt(df_today_v,2,p1_label),
+                   cnt(df_today_v,3,p1_label),cnt(df_today_v,None,p1_label)],
+        '3교시':  [cnt(df_today_v,1,p2_label),cnt(df_today_v,2,p2_label),
+                   cnt(df_today_v,3,p2_label),cnt(df_today_v,None,p2_label)],
     }
-    data_table['합계'] = [a+b for a,b in zip(data_table['1교시'],data_table['2~3교시'])]
+    data_table['합계'] = [a+b for a,b in zip(data_table['1교시'],data_table['3교시'])]
 
     tbody = ""
-    for label,v1,v2,vt in zip(data_table['학년'],data_table['1교시'],data_table['2~3교시'],data_table['합계']):
+    for label,v1,v2,vt in zip(data_table['학년'],data_table['1교시'],data_table['3교시'],data_table['합계']):
         is_total = (label=='✅ 전체')
         bg = '#f0fdf4' if is_total else 'white'
         fw = '700'    if is_total else '500'
         fs = '1.2rem' if is_total else '1.4rem'
         tbody += f"<tr style='background:{bg}'><td style='padding:16px 24px;font-weight:{fw};font-size:1rem;border-bottom:1px solid #f3f4f6'>{label}</td><td style='padding:16px;text-align:center;font-weight:{fw};font-size:{fs};color:#3b82f6;border-bottom:1px solid #f3f4f6'>{v1}명</td><td style='padding:16px;text-align:center;font-weight:{fw};font-size:{fs};color:#8b5cf6;border-bottom:1px solid #f3f4f6'>{v2}명</td><td style='padding:16px;text-align:center;font-weight:{fw};font-size:{fs};color:#10b981;border-bottom:1px solid #f3f4f6'>{vt}명</td></tr>"
 
+    # ★ 테이블 헤더도 '3교시'로 변경
     st.markdown(f"""<table style='width:100%;border-collapse:collapse;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(26,47,90,0.08);margin-bottom:20px'>
       <thead><tr style='background:#1d3a6e;color:white'>
         <th style='padding:16px 24px;text-align:left;font-size:0.95rem;width:22%'>학년</th>
         <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>1교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>16:10 ~ 17:40</span></th>
-        <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>2~3교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>18:40 ~ 21:50</span></th>
+        <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>3교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>18:40 ~ 21:50</span></th>
         <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>합계</th>
       </tr></thead><tbody>{tbody}</tbody></table>""", unsafe_allow_html=True)
 
@@ -536,11 +540,9 @@ with tab6:
     if not valid_all_g:
         empty_state("유효한 학년 데이터가 없습니다.")
     else:
-        # ── 주간 offset 초기화 ────────────────────────
         if "t6_week_offset" not in st.session_state:
             st.session_state["t6_week_offset"] = 0
 
-        # ── 컨트롤 한 줄: 학년 / 반 / 주간이동 / 새로고침 ──
         hc1, hc2, hc3, hc4 = st.columns([1, 1, 2.5, 0.5])
 
         with hc1:
@@ -583,7 +585,6 @@ with tab6:
             week_start = ws
             week_end   = we
 
-            # ── 학생목록에서 해당 반 전체 학생 ──────────
             if not df_students.empty and '학년' in df_students.columns and '반' in df_students.columns:
                 class_students = df_students[
                     (df_students['학년']==h_gnum) & (df_students['반']==h_knum)
@@ -592,7 +593,6 @@ with tab6:
             else:
                 class_students = pd.DataFrame()
 
-            # ── 해당 반 해당 주 출석 데이터 ──────────────
             df_week = df_valid[
                 (df_valid['학년']==h_gnum) &
                 (df_valid['반']==h_knum) &
@@ -600,7 +600,6 @@ with tab6:
                 (df_valid['날짜'] <= pd.Timestamp(week_end))
             ].copy() if not df_valid.empty else pd.DataFrame()
 
-            # ── 요약 지표 ────────────────────────────────
             total_students    = len(class_students) if not class_students.empty else \
                                 (df_week['이름'].nunique() if not df_week.empty and '이름' in df_week.columns else 0)
             attended_students = df_week['이름'].nunique() if not df_week.empty and '이름' in df_week.columns else 0
@@ -617,7 +616,6 @@ with tab6:
 
             st.markdown("---")
 
-            # ── 요일 목록 (월~금) ────────────────────────
             dow_kor  = {0:'월',1:'화',2:'수',3:'목',4:'금'}
             week_days = []
             d = week_start
@@ -626,7 +624,6 @@ with tab6:
                     week_days.append(d)
                 d += timedelta(days=1)
 
-            # ── 학생 목록 결정 ───────────────────────────
             if not class_students.empty and '이름' in class_students.columns:
                 if '번호' in class_students.columns:
                     student_rows = class_students[['번호','이름']].drop_duplicates().values.tolist()
@@ -640,7 +637,7 @@ with tab6:
             else:
                 student_rows = []
 
-            # ── 범례 헤더 ────────────────────────────────
+            # ★ 범례: '2~3교시' → '3교시'
             st.markdown(f"""
             <div style='display:flex;align-items:center;justify-content:space-between;margin-bottom:10px'>
               <div style='font-size:1.05rem;font-weight:700;color:#1d3a6e'>
@@ -648,7 +645,7 @@ with tab6:
               </div>
               <div style='display:flex;gap:8px;font-size:12px;align-items:center;flex-wrap:wrap'>
                 <span style='background:#dbeafe;color:#1e40af;padding:2px 10px;border-radius:4px;font-weight:600'>1교시</span>
-                <span style='background:#ede9fe;color:#5b21b6;padding:2px 10px;border-radius:4px;font-weight:600'>2~3교시</span>
+                <span style='background:#ede9fe;color:#5b21b6;padding:2px 10px;border-radius:4px;font-weight:600'>3교시</span>
                 <span style='background:#d1fae5;color:#065f46;padding:2px 10px;border-radius:4px;font-weight:600'>둘 다</span>
                 <span style='color:#9ca3af'>— 미참여</span>
               </div>
@@ -657,14 +654,12 @@ with tab6:
             if not student_rows:
                 empty_state("표시할 학생 데이터가 없습니다.")
             else:
-                # ── 요일 헤더 ────────────────────────────
                 day_headers = ""
                 for day in week_days:
                     dow_str  = dow_kor[day.weekday()]
                     date_str = f"{day.month}/{day.day}"
                     day_headers += f"<th style='padding:10px 6px;text-align:center;min-width:76px'>{dow_str}<br><span style='font-size:11px;opacity:0.8;font-weight:400'>{date_str}</span></th>"
 
-                # ── 학생별 행 ────────────────────────────
                 tbody_rows = ""
                 for s_info in student_rows:
                     s_num  = s_info[0] if len(s_info) > 0 else None
@@ -681,8 +676,9 @@ with tab6:
                         else:
                             periods = set()
 
-                        has_p1 = '1교시'   in periods
-                        has_p2 = '2~3교시' in periods
+                        has_p1 = '1교시' in periods
+                        # ★ '2~3교시' → '3교시' 로 통일
+                        has_p2 = '3교시' in periods
 
                         if has_p1 and has_p2:
                             cell = "<span style='background:#d1fae5;color:#065f46;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600'>둘 다</span>"
@@ -691,14 +687,14 @@ with tab6:
                             cell = "<span style='background:#dbeafe;color:#1e40af;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600'>1교시</span>"
                             week_total += 1
                         elif has_p2:
-                            cell = "<span style='background:#ede9fe;color:#5b21b6;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600'>2~3교시</span>"
+                            # ★ 셀 표시도 '3교시'
+                            cell = "<span style='background:#ede9fe;color:#5b21b6;font-size:11px;padding:2px 8px;border-radius:4px;font-weight:600'>3교시</span>"
                             week_total += 1
                         else:
                             cell = "<span style='color:#d1d5db;font-size:14px'>—</span>"
 
                         row_cells += f"<td style='padding:10px 6px;text-align:center;border-bottom:1px solid #f3f4f6'>{cell}</td>"
 
-                    # 합계 배지 색상
                     if week_total == 0:
                         badge = f"<span style='background:#fef2f2;color:#991b1b;border:1px solid #fecaca;border-radius:12px;padding:2px 10px;font-size:11px;font-weight:600'>0회</span>"
                     elif week_total >= 8:
@@ -731,10 +727,9 @@ with tab6:
                 </table>
                 </div>
                 <div style='font-size:11px;color:#9ca3af;margin-bottom:16px'>
-                  ⭐ 주간 8회 이상(1+2~3교시 모두) &nbsp;·&nbsp; 🔴 미참여 학생은 행 배경 연빨간색 &nbsp;·&nbsp; 학생목록 시트 기준
+                  ⭐ 주간 8회 이상(1+3교시 모두) &nbsp;·&nbsp; 🔴 미참여 학생은 행 배경 연빨간색 &nbsp;·&nbsp; 학생목록 시트 기준
                 </div>""", unsafe_allow_html=True)
 
-            # ── 이번 주 일별 추이 차트 ───────────────────
             st.markdown("<div class='section-title'>📈 이번 주 일별 출석 추이</div>", unsafe_allow_html=True)
             if not df_week.empty and '날짜' in df_week.columns and '이메일' in df_week.columns:
                 dc = df_week.groupby('날짜')['이메일'].nunique().reset_index().rename(columns={'이메일':'학생수'})
