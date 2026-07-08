@@ -207,7 +207,7 @@ st.markdown(f"""
 </div>""", unsafe_allow_html=True)
 
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🏠 오늘 현황", "🏆 TOP3 시상", "📈 주차별 추이",
+    "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
     "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회"
 ])
 
@@ -342,7 +342,7 @@ with tab1:
 with tab2:
     start_date, end_date = period_filter_ui("t2")
     df = filter_period(df_valid, start_date, end_date)
-    st.markdown("<div class='section-title'>🏆 기간 내 TOP3 현황</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-title'>🏆 기간 내 TOP6 현황</div>", unsafe_allow_html=True)
     st.caption(f"기간: {start_date} ~ {end_date}")
 
     if df.empty or '이메일' not in df.columns:
@@ -353,7 +353,7 @@ with tab2:
 
         def show_top3(data, title, score_col='체크인수'):
             st.markdown(f"**{title}**")
-            top = data.nlargest(3, score_col).reset_index(drop=True)
+            top = data.nlargest(6, score_col).reset_index(drop=True)
             if top.empty: empty_state("데이터 없음"); return
             for i, row in top.iterrows():
                 medal = MEDALS[i] if i<3 else f"{i+1}위"
@@ -369,33 +369,35 @@ with tab2:
                   <span style="float:right;color:#2d7ef7;font-weight:700">{cnt_v}회 · {days}일</span>
                 </div>""", unsafe_allow_html=True)
 
-        st.markdown("<div class='section-title'>🌟 전체 학생 TOP3</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>🌟 전체 학생 TOP6</div>", unsafe_allow_html=True)
         if '어학과' not in stu.columns and '반' in df.columns:
             stu['어학과'] = stu['반'].apply(lambda k: (
                 '중국어과' if k<=2 else '일본어과' if k<=4 else '독일어과'
                 if k<=6 else '프랑스어과' if k<=8 else '스페인어과') if pd.notna(k) else '')
-        show_top3(stu, "🏅 전체 TOP3")
+        show_top3(stu, "🏅 전체 TOP6")
         st.markdown("---")
 
-        st.markdown("<div class='section-title'>📚 학년별 TOP3</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>📚 학년별 TOP6</div>", unsafe_allow_html=True)
         gc1,gc2,gc3 = st.columns(3)
         for col,grade_n in zip([gc1,gc2,gc3],[1,2,3]):
             with col:
                 show_top3(stu[stu['학년']==grade_n] if '학년' in stu.columns else pd.DataFrame(),
-                          f"🎓 {grade_n}학년 TOP3")
+                          f"🎓 {grade_n}학년 TOP6")
         st.markdown("---")
 
-        st.markdown("<div class='section-title'>🏫 반별 TOP3</div>", unsafe_allow_html=True)
+        st.markdown("<div class='section-title'>🏫 반별 TOP6</div>", unsafe_allow_html=True)
         if '학년' in df.columns and '반' in df.columns and '이메일' in df.columns:
             cls_sum = df.groupby(['학년','반']).agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique')).reset_index()
             cls_sum['반명'] = cls_sum.apply(lambda r: make_label(r['학년'],r['반']),axis=1)
-            cls_top = cls_sum[cls_sum['반명']!='미확인'].nlargest(3,'체크인수').reset_index(drop=True)
-            if not cls_top.empty:
-                rc1,rc2,rc3 = st.columns(3)
-                for col,(i,row) in zip([rc1,rc2,rc3],cls_top.iterrows()):
+            cls_top = cls_sum[cls_sum['반명']!='미확인'].nlargest(6,'체크인수').reset_index(drop=True)
+            for chunk_start in range(0, len(cls_top), 3):
+                chunk = cls_top.iloc[chunk_start:chunk_start+3]
+                cols = st.columns(3)
+                for col,(i,row) in zip(cols,chunk.iterrows()):
                     with col:
                         medal = MEDALS[i] if i<3 else f"{i+1}위"
-                        st.markdown(f"""<div class="top3-card {'gold silver bronze'.split()[i] if i<3 else ''}">
+                        cls   = ['gold','silver','bronze'][i] if i<3 else ''
+                        st.markdown(f"""<div class="top3-card {cls}">
                           <div style="font-size:1.5rem;text-align:center">{medal}</div>
                           <div style="text-align:center;font-size:1.1rem;font-weight:700">{row['반명']}</div>
                           <div style="text-align:center;color:#2d7ef7">체크인 {int(row['체크인수'])}회</div>
