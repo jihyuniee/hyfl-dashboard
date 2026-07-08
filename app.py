@@ -349,7 +349,15 @@ with tab2:
         empty_state("선택 기간에 데이터가 없습니다.")
     else:
         grp_cols = [c for c in ['이메일','이름','학년','반'] if c in df.columns]
-        stu = df.groupby(grp_cols).agg(체크인수=('날짜','count'), 출석일수=('날짜','nunique')).reset_index()
+
+        # ★ TOP6는 하루에 1교시+3교시를 모두 출석한 날만 인정한다 (한 교시만 출석한 날은 카운트하지 않음)
+        if '교시' in df.columns and '날짜' in df.columns:
+            day_periods = df.groupby(grp_cols + ['날짜'])['교시'].apply(lambda s: set(s)).reset_index(name='교시집합')
+            day_periods['완전출석'] = day_periods['교시집합'].apply(lambda s: {'1교시','3교시'}.issubset(s))
+            full_days = day_periods[day_periods['완전출석']]
+            stu = full_days.groupby(grp_cols).agg(체크인수=('날짜','nunique')).reset_index()
+        else:
+            stu = df.groupby(grp_cols).agg(체크인수=('날짜','nunique')).reset_index()
 
         def show_top3(data, title, score_col='체크인수'):
             st.markdown(f"**{title}**")
@@ -361,12 +369,12 @@ with tab2:
                 name  = row.get('이름',''); grade=safe_int(row.get('학년','')); klass=safe_int(row.get('반',''))
                 dept  = row['어학과'] if '어학과' in row.index else ''
                 info  = f"{grade}학년 {klass}반 {dept}" if grade and klass else ''
-                cnt_v = int(row[score_col]); days = int(row.get('출석일수',0))
+                cnt_v = int(row[score_col])
                 st.markdown(f"""<div class="top3-card {cls}">
                   <span style="font-size:1.3rem">{medal}</span>
                   <strong style="font-size:1rem;margin-left:8px">{name}</strong>
                   <span style="color:#6b7280;font-size:0.85rem;margin-left:8px">{info}</span>
-                  <span style="float:right;color:#2d7ef7;font-weight:700">{cnt_v}회 · {days}일</span>
+                  <span style="float:right;color:#2d7ef7;font-weight:700">{cnt_v}일 (1·3교시 모두 출석)</span>
                 </div>""", unsafe_allow_html=True)
 
         st.markdown("<div class='section-title'>🌟 전체 학생 TOP6</div>", unsafe_allow_html=True)
@@ -387,7 +395,13 @@ with tab2:
 
         st.markdown("<div class='section-title'>🏫 반별 TOP6</div>", unsafe_allow_html=True)
         if '학년' in df.columns and '반' in df.columns and '이메일' in df.columns:
-            cls_sum = df.groupby(['학년','반']).agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique')).reset_index()
+            if '교시' in df.columns and '날짜' in df.columns:
+                cls_day_periods = df.groupby(['학년','반','이메일','날짜'])['교시'].apply(lambda s: set(s)).reset_index(name='교시집합')
+                cls_day_periods['완전출석'] = cls_day_periods['교시집합'].apply(lambda s: {'1교시','3교시'}.issubset(s))
+                cls_full_days = cls_day_periods[cls_day_periods['완전출석']]
+                cls_sum = cls_full_days.groupby(['학년','반']).agg(체크인수=('날짜','count'),고유학생수=('이메일','nunique')).reset_index()
+            else:
+                cls_sum = df.groupby(['학년','반']).agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique')).reset_index()
             cls_sum['반명'] = cls_sum.apply(lambda r: make_label(r['학년'],r['반']),axis=1)
             cls_top = cls_sum[cls_sum['반명']!='미확인'].nlargest(6,'체크인수').reset_index(drop=True)
             for chunk_start in range(0, len(cls_top), 3):
@@ -400,7 +414,7 @@ with tab2:
                         st.markdown(f"""<div class="top3-card {cls}">
                           <div style="font-size:1.5rem;text-align:center">{medal}</div>
                           <div style="text-align:center;font-size:1.1rem;font-weight:700">{row['반명']}</div>
-                          <div style="text-align:center;color:#2d7ef7">체크인 {int(row['체크인수'])}회</div>
+                          <div style="text-align:center;color:#2d7ef7">완전출석 {int(row['체크인수'])}일</div>
                           <div style="text-align:center;color:#6b7280;font-size:0.85rem">참여 {int(row['고유학생수'])}명</div>
                         </div>""", unsafe_allow_html=True)
 
