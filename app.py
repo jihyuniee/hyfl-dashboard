@@ -361,11 +361,15 @@ with tab2:
 
         def show_top3(data, title, score_col='체크인수'):
             st.markdown(f"**{title}**")
-            top = data.nlargest(6, score_col).reset_index(drop=True)
-            if top.empty: empty_state("데이터 없음"); return
+            if data.empty: empty_state("데이터 없음"); return
+            sorted_data = data.sort_values(score_col, ascending=False).reset_index(drop=True)
+            # ★ 6위와 동점인 학생도 모두 "공동 6위"로 함께 표시
+            cutoff_val = sorted_data[score_col].iloc[min(5, len(sorted_data)-1)]
+            top = sorted_data[sorted_data[score_col] >= cutoff_val].reset_index(drop=True)
             for i, row in top.iterrows():
-                medal = MEDALS[i] if i<3 else f"{i+1}위"
-                cls   = ['gold','silver','bronze'][i] if i<3 else ''
+                rank  = int((top[score_col] > row[score_col]).sum()) + 1
+                medal = MEDALS[rank-1] if rank<=3 else f"{rank}위"
+                cls   = ['gold','silver','bronze'][rank-1] if rank<=3 else ''
                 name  = row.get('이름',''); grade=safe_int(row.get('학년','')); klass=safe_int(row.get('반',''))
                 dept  = row['어학과'] if '어학과' in row.index else ''
                 info  = f"{grade}학년 {klass}반 {dept}" if grade and klass else ''
@@ -403,14 +407,21 @@ with tab2:
             else:
                 cls_sum = df.groupby(['학년','반']).agg(체크인수=('이메일','count'),고유학생수=('이메일','nunique')).reset_index()
             cls_sum['반명'] = cls_sum.apply(lambda r: make_label(r['학년'],r['반']),axis=1)
-            cls_top = cls_sum[cls_sum['반명']!='미확인'].nlargest(6,'체크인수').reset_index(drop=True)
+            cls_valid = cls_sum[cls_sum['반명']!='미확인'].sort_values('체크인수', ascending=False).reset_index(drop=True)
+            if cls_valid.empty:
+                cls_top = cls_valid
+            else:
+                # ★ 6위와 동점인 반도 모두 "공동 6위"로 함께 표시
+                cls_cutoff = cls_valid['체크인수'].iloc[min(5, len(cls_valid)-1)]
+                cls_top = cls_valid[cls_valid['체크인수'] >= cls_cutoff].reset_index(drop=True)
             for chunk_start in range(0, len(cls_top), 3):
                 chunk = cls_top.iloc[chunk_start:chunk_start+3]
                 cols = st.columns(3)
                 for col,(i,row) in zip(cols,chunk.iterrows()):
                     with col:
-                        medal = MEDALS[i] if i<3 else f"{i+1}위"
-                        cls   = ['gold','silver','bronze'][i] if i<3 else ''
+                        rank  = int((cls_top['체크인수'] > row['체크인수']).sum()) + 1
+                        medal = MEDALS[rank-1] if rank<=3 else f"{rank}위"
+                        cls   = ['gold','silver','bronze'][rank-1] if rank<=3 else ''
                         st.markdown(f"""<div class="top3-card {cls}">
                           <div style="font-size:1.5rem;text-align:center">{medal}</div>
                           <div style="text-align:center;font-size:1.1rem;font-weight:700">{row['반명']}</div>
