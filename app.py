@@ -3,8 +3,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from io import BytesIO
+from html import escape
+from urllib.parse import quote
+import re
 import gspread
 from google.oauth2.service_account import Credentials
+from openpyxl import load_workbook
 
 st.set_page_config(page_title="한영외고 야자 대시보드", page_icon="🏫", layout="wide",
                    initial_sidebar_state="collapsed")
@@ -39,6 +45,24 @@ st.markdown("""
         color: #9ca3af; background: #f9fafb;
         border-radius: 12px; margin: 8px 0; font-size: 0.9rem;
     }
+    .seat-board { overflow:auto; padding:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:16px; }
+    .seat-grid { display:grid; gap:3px; min-width:980px; }
+    .seat { min-width:42px; min-height:31px; padding:3px 4px; border-radius:5px; text-decoration:none !important;
+            display:flex; flex-direction:column; justify-content:center; align-items:center; line-height:1.05;
+            font-size:10px; font-weight:700; box-sizing:border-box; color:#334155 !important; }
+    .seat small { font-size:8px; font-weight:600; opacity:.82; margin-top:2px; }
+    .seat-green { background:#dcfce7; border:2px solid #22c55e; color:#166534 !important; }
+    .seat-red { background:#fee2e2; border:2px solid #ef4444; color:#991b1b !important; }
+    .seat-orange { background:#ffedd5; border:2px solid #f97316; color:#9a3412 !important; }
+    .seat-neutral { background:#f1f5f9; border:1px solid #cbd5e1; color:#64748b !important; }
+    .seat-free { background:#fff; border:3px solid #ef4444; }
+    .seat-free.seat-green { background:#dcfce7; border-color:#ef4444; box-shadow:inset 0 0 0 2px #22c55e; }
+    .seat-free.seat-orange { background:#ffedd5; border-color:#ef4444; box-shadow:inset 0 0 0 2px #f97316; }
+    .seat-unavailable { color:#94a3b8 !important; border:1px solid #94a3b8;
+        background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 5px,#f8fafc 5px,#f8fafc 10px); }
+    .seat-selected { outline:3px solid #2563eb; outline-offset:2px; }
+    .legend { display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:12px; color:#475569; margin:8px 0 14px; }
+    .legend-dot { width:13px; height:13px; border-radius:4px; display:inline-block; margin-right:4px; vertical-align:-2px; }
     #MainMenu, footer, header { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
@@ -55,7 +79,7 @@ def is_valid(v):
     return v is not None and str(v) not in ['미지정', '', 'nan', 'None']
 
 def get_week_range(offset=0):
-    today = datetime.now().date()
+    today = now_kst().date()
     mon   = today - timedelta(days=today.weekday()) + timedelta(weeks=offset)
     return mon, mon + timedelta(days=6)
 
@@ -65,8 +89,124 @@ def make_label(g, k):
     return "미확인"
 
 MEDALS = ['🥇','🥈','🥉']
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets.readonly",
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
           "https://www.googleapis.com/auth/drive.readonly"]
+
+KST = ZoneInfo("Asia/Seoul")
+
+def now_kst():
+    return datetime.now(KST)
+
+def normalize_student_id(row):
+    if is_valid(row.get('학번')):
+        return str(safe_int(row.get('학번')))
+    g, k, n = safe_int(row.get('학년')), safe_int(row.get('반')), safe_int(row.get('번호'))
+    return str(g * 10000 + k * 100 + n) if g and k and n else ''
+
+def normalize_seat(v):
+    return str(v).strip().upper().replace(' ', '') if is_valid(v) else ''
+
+@st.cache_data(ttl=60)
+def load_optional_sheet(key, ws_name):
+    try:
+        creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+        ws = gspread.authorize(creds).open_by_key(key).worksheet(ws_name)
+        records = ws.get_all_records()
+        if not records:
+            return pd.DataFrame()
+        df = pd.DataFrame(records)
+        df.columns = df.columns.astype(str).str.strip()
+        return df
+    except gspread.WorksheetNotFound:
+        return pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
+def border_is_thick(cell):
+    return any(side.style in ('medium','thick') for side in
+               (cell.border.left, cell.border.right, cell.border.top, cell.border.bottom))
+
+def parse_setup_files(participation_file, seating_file):
+    """원본 엑셀을 비공개 Google Sheet에 저장할 정규화 표로 변환한다."""
+    pw = load_workbook(BytesIO(participation_file.getvalue()), data_only=True)
+    student_map = {}
+    for grade_name in ('1학년','2학년','3학년'):
+        if grade_name not in pw.sheetnames:
+            continue
+        ws = pw[grade_name]
+        grade = int(grade_name[0])
+        for r in range(4, ws.max_row + 1):
+            sid, name = ws.cell(r,2).value, ws.cell(r,3).value
+            if not isinstance(sid, (int,float)) or not name:
+                continue
+            sid = str(int(sid))
+            item = {'학번':sid, '성명':str(name).strip(), '학년':grade,
+                    '반':safe_int(sid[1:3]), '번호':safe_int(sid[3:5])}
+            for c, day in zip(range(4,9), '월화수목금'):
+                item[day] = 1 if ws.cell(r,c).value not in (None,'',0) else 0
+            # 원본에 같은 학번이 여러 번 있으면 마지막(최종 수정) 행을 사용한다.
+            student_map[sid] = item
+
+    sw = load_workbook(BytesIO(seating_file.getvalue()), data_only=True)
+    seat_pattern = re.compile(r'^[A-Z]-\d+$')
+    seats, seen = [], set()
+    for ws in sw.worksheets:
+        floor = '1학년 2층' if '2층' in ws.title else '2·3학년 4층'
+        for row in ws.iter_rows():
+            for cell in row:
+                raw = cell.value
+                if not isinstance(raw, str) or not seat_pattern.match(raw.strip()):
+                    continue
+                seat = raw.strip().upper()
+                right = ws.cell(cell.row, cell.column + 1)
+                sid = str(int(right.value)) if isinstance(right.value,(int,float)) and 10000 <= right.value < 40000 else ''
+                diagonal = bool(cell.border.diagonalUp or cell.border.diagonalDown or
+                                right.border.diagonalUp or right.border.diagonalDown)
+                thick = border_is_thick(cell) or border_is_thick(right)
+                if diagonal: seat_type = '사용불가'
+                elif sid: seat_type = '지정석'
+                elif thick: seat_type = '자유석'
+                else: continue
+                key = (floor, seat)
+                if key in seen: continue
+                seen.add(key)
+                prefix = seat.split('-')[0]
+                room = ('내실 E' if prefix == 'E' else '외실 G·H') if '4층' in floor else f'1학년 {prefix}구역'
+                seats.append({'층':floor, '공간':room, '좌석':seat, '행':cell.row, '열':cell.column,
+                              '좌석유형':seat_type, '지정학번':sid})
+    return pd.DataFrame(student_map.values()), pd.DataFrame(seats)
+
+def replace_worksheet(key, title, df):
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+    book = gspread.authorize(creds).open_by_key(key)
+    try:
+        ws = book.worksheet(title); ws.clear()
+    except gspread.WorksheetNotFound:
+        ws = book.add_worksheet(title=title, rows=max(100, len(df)+10), cols=max(12, len(df.columns)+2))
+    values = [df.columns.tolist()] + df.fillna('').astype(str).values.tolist()
+    ws.update(values=values, range_name='A1')
+
+def setup_data_ui(key):
+    with st.expander('⚙️ 좌석판 초기 데이터 설정', expanded=False):
+        st.caption('원본 엑셀은 GitHub에 저장되지 않고 비공개 Google Sheet에 정규화하여 저장됩니다.')
+        configured_pin = str(st.secrets.get('supervisor_pin', '')).strip()
+        if not configured_pin:
+            st.info('Streamlit secrets에 supervisor_pin을 설정하면 이곳에서 원본 엑셀을 등록할 수 있습니다.')
+            return
+        entered = st.text_input('감독교사 PIN', type='password', key='setup_pin')
+        if entered != configured_pin: return
+        p_file = st.file_uploader('야간 자기주도학습 참여조사', type=['xlsx'], key='participation_upload')
+        s_file = st.file_uploader('자기주도학습 좌석배치표', type=['xlsx'], key='seating_upload')
+        if st.button('좌석판 데이터 등록', disabled=not (p_file and s_file), type='primary'):
+            try:
+                students, seats = parse_setup_files(p_file, s_file)
+                replace_worksheet(key, '야자신청', students)
+                replace_worksheet(key, '좌석설정', seats)
+                st.cache_data.clear()
+                st.success(f'등록 완료: 학생 {len(students)}명 · 좌석 {len(seats)}석')
+                st.rerun()
+            except Exception as e:
+                st.error(f'등록 실패: {e}')
 
 @st.cache_data(ttl=300)
 def load_data(key, ws_name):
@@ -140,7 +280,7 @@ def filter_period(df, start, end):
 def period_filter_ui(tab_key):
     s_key = f"{tab_key}_start"
     e_key = f"{tab_key}_end"
-    today = datetime.now().date()
+    today = now_kst().date()
     if s_key not in st.session_state:
         st.session_state[s_key] = today - timedelta(days=today.weekday())
     if e_key not in st.session_state:
@@ -179,7 +319,7 @@ def period_filter_ui(tab_key):
 # ── 고정값 ────────────────────────────────────────────
 sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
 ws_name   = "출석기록"
-today     = datetime.now().date()
+today     = now_kst().date()
 
 st.markdown("---")
 
@@ -187,6 +327,8 @@ st.markdown("---")
 with st.spinner("데이터 불러오는 중..."):
     df_all      = load_data(sheet_key, ws_name)
     df_students = load_student_list(sheet_key)
+    df_applications = load_optional_sheet(sheet_key, '야자신청')
+    df_seats = load_optional_sheet(sheet_key, '좌석설정')
 
 if df_all.empty:
     st.markdown("""<div style='text-align:center;padding:60px 20px;color:#6b7280'>
@@ -206,10 +348,143 @@ st.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
+tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
     "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회"
 ])
+
+# ══════════════════════════════════════════════════
+# 감독 좌석판: 신청 요일 + 지정석 + 실제 QR 좌석 비교
+# ══════════════════════════════════════════════════
+with tab_seat:
+    st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
+    setup_data_ui(sheet_key)
+
+    if df_applications.empty or df_seats.empty:
+        empty_state("좌석판 초기 데이터가 없습니다. 감독교사 PIN으로 참여조사와 좌석배치표를 한 번 등록해 주세요.")
+    else:
+        seat_day = st.date_input('조회 날짜', value=today, max_value=today,
+                                 format='YYYY/MM/DD', key='seat_board_day')
+        period_values = df_valid.get('교시', pd.Series(dtype=str)).astype(str).unique().tolist()
+        period_options = [p for p in ['1교시','3교시'] if p in period_values] or ['1교시','3교시']
+        c_period, c_floor, c_room, c_refresh = st.columns([1,1.4,1.5,.5])
+        with c_period:
+            seat_period = st.selectbox('교시', period_options, key='seat_board_period')
+        with c_floor:
+            floors = df_seats['층'].dropna().astype(str).unique().tolist()
+            seat_floor = st.selectbox('자습실', floors, key='seat_board_floor')
+        floor_df = df_seats[df_seats['층'].astype(str) == seat_floor].copy()
+        with c_room:
+            rooms = floor_df['공간'].dropna().astype(str).unique().tolist()
+            room_choice = st.selectbox('구역', ['전체'] + rooms, key='seat_board_room')
+        with c_refresh:
+            st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+            if st.button('🔄', help='새로고침', key='seat_board_refresh'):
+                st.cache_data.clear(); st.rerun()
+
+        day_name = '월화수목금토일'[seat_day.weekday()]
+        apps = df_applications.copy()
+        apps['학번키'] = apps['학번'].apply(lambda x: str(safe_int(x)) if safe_int(x) else '')
+        apps_by_id = apps.set_index('학번키').to_dict('index')
+        expected_ids = set(apps.loc[pd.to_numeric(apps[day_name], errors='coerce').fillna(0) > 0, '학번키']) \
+                       if day_name in apps.columns else set()
+
+        checkins = df_valid.copy()
+        checkins = checkins[checkins['날짜'] == pd.Timestamp(seat_day)] if '날짜' in checkins.columns else checkins.iloc[0:0]
+        if '교시' in checkins.columns:
+            checkins = checkins[checkins['교시'].astype(str) == seat_period]
+        checkins['학번키'] = checkins.apply(normalize_student_id, axis=1)
+        seat_source = checkins['좌석'] if '좌석' in checkins.columns else pd.Series('', index=checkins.index)
+        checkins['좌석키'] = seat_source.apply(normalize_seat)
+        checked_by_id = {r['학번키']:r for _,r in checkins.iterrows() if r['학번키']}
+        checked_by_seat = {r['좌석키']:r for _,r in checkins.iterrows() if r['좌석키']}
+
+        fixed = df_seats[df_seats['좌석유형'].astype(str) == '지정석'].copy()
+        assigned_by_id = {str(safe_int(r['지정학번'])):normalize_seat(r['좌석'])
+                          for _,r in fixed.iterrows() if safe_int(r['지정학번'])}
+        mismatched_ids = {sid for sid,r in checked_by_id.items()
+                          if sid in assigned_by_id and normalize_seat(r.get('좌석')) != assigned_by_id[sid]}
+        expected_fixed = expected_ids.intersection(assigned_by_id)
+        normal_count = sum(sid in checked_by_id and sid not in mismatched_ids for sid in expected_fixed)
+        missing_count = sum(sid not in checked_by_id for sid in expected_fixed)
+
+        m1,m2,m3,m4 = st.columns(4)
+        m1.metric('오늘 지정석 대상', f'{len(expected_fixed)}명')
+        m2.metric('정상 체크인', f'{normal_count}명')
+        m3.metric('미체크인', f'{missing_count}명')
+        m4.metric('지정석 불일치', f'{len(mismatched_ids)}명')
+
+        st.markdown("""<div class='legend'>
+          <span><i class='legend-dot' style='background:#dcfce7;border:2px solid #22c55e'></i>정상 체크인</span>
+          <span><i class='legend-dot' style='background:#fee2e2;border:2px solid #ef4444'></i>오늘 신청·미체크인</span>
+          <span><i class='legend-dot' style='background:#ffedd5;border:2px solid #f97316'></i>지정석 불일치</span>
+          <span><i class='legend-dot' style='background:white;border:3px solid #ef4444'></i>자유석</span>
+          <span><i class='legend-dot' style='background:#e2e8f0;border:1px solid #94a3b8'></i>사용 불가</span>
+        </div>""", unsafe_allow_html=True)
+
+        selected_seat = normalize_seat(st.query_params.get('seat', ''))
+        board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
+        board_df = board_df.copy()
+        board_df['행'] = pd.to_numeric(board_df['행'], errors='coerce')
+        board_df['열'] = pd.to_numeric(board_df['열'], errors='coerce')
+        board_df = board_df.dropna(subset=['행','열'])
+        if board_df.empty:
+            empty_state('표시할 좌석이 없습니다.')
+        else:
+            min_row, min_col = int(board_df['행'].min()), int(board_df['열'].min())
+            max_col = int(board_df['열'].max()) - min_col + 2
+            seat_html = []
+            for _, seat_row in board_df.iterrows():
+                seat = normalize_seat(seat_row['좌석'])
+                seat_type = str(seat_row['좌석유형'])
+                sid = str(safe_int(seat_row.get('지정학번'))) if safe_int(seat_row.get('지정학번')) else ''
+                actual = checked_by_seat.get(seat)
+                css, subtitle = 'seat-neutral', sid[-5:] if sid else ''
+                if seat_type == '사용불가':
+                    css, subtitle = 'seat-unavailable', '사용불가'
+                elif seat_type == '자유석':
+                    if actual is not None:
+                        actual_sid = normalize_student_id(actual)
+                        css = 'seat-free seat-orange' if actual_sid in mismatched_ids else 'seat-free seat-green'
+                        subtitle = actual_sid[-5:]
+                    else:
+                        css, subtitle = 'seat-free', '자유석'
+                elif actual is not None:
+                    actual_sid = normalize_student_id(actual)
+                    css = 'seat-orange' if actual_sid in mismatched_ids else 'seat-green'
+                    subtitle = actual_sid[-5:]
+                elif sid in mismatched_ids:
+                    css, subtitle = 'seat-orange', f"→{normalize_seat(checked_by_id[sid].get('좌석'))}"
+                elif sid in expected_ids:
+                    css = 'seat-red'
+                if seat == selected_seat: css += ' seat-selected'
+                grid_row = int(seat_row['행']) - min_row + 1
+                grid_col = int(seat_row['열']) - min_col + 1
+                seat_html.append(
+                    f"<a class='seat {css}' href='?seat={quote(seat)}' target='_self' "
+                    f"style='grid-row:{grid_row};grid-column:{grid_col}/span 2'>"
+                    f"{escape(seat)}<small>{escape(subtitle)}</small></a>")
+            st.markdown(f"<div class='seat-board'><div class='seat-grid' style='grid-template-columns:repeat({max_col},24px)'>"
+                        + ''.join(seat_html) + "</div></div>", unsafe_allow_html=True)
+
+        if selected_seat:
+            selected_cfg = df_seats[df_seats['좌석'].astype(str).str.upper() == selected_seat]
+            if not selected_cfg.empty:
+                cfg = selected_cfg.iloc[0]
+                assigned_sid = str(safe_int(cfg.get('지정학번'))) if safe_int(cfg.get('지정학번')) else ''
+                actual = checked_by_seat.get(selected_seat)
+                display_sid = normalize_student_id(actual) if actual is not None else assigned_sid
+                info = apps_by_id.get(display_sid, {})
+                st.markdown(f"<div class='section-title'>좌석 {escape(selected_seat)} 상세</div>", unsafe_allow_html=True)
+                d1,d2,d3,d4 = st.columns(4)
+                d1.metric('학생', str(info.get('성명','미배정')))
+                d2.metric('학번', display_sid or '-')
+                d3.metric('지정 좌석', assigned_by_id.get(display_sid, '자유석'))
+                d4.metric('체크인 좌석', normalize_seat(actual.get('좌석')) if actual is not None else '-')
+                if display_sid in mismatched_ids:
+                    st.warning(f"지정석 불일치: {assigned_by_id[display_sid]} 지정 학생이 {normalize_seat(actual.get('좌석'))}에서 체크인했습니다.")
+                days = ' · '.join(d for d in '월화수목금' if safe_int(info.get(d)) == 1)
+                if days: st.caption(f'신청 요일: {days}')
 
 # ══════════════════════════════════════════════════
 # TAB 1: 오늘 현황
