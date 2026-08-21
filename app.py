@@ -372,7 +372,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v5 · 빈 공간 없이 자동 맞춤 · 두 손가락 확대 · 좌석을 누르면 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v6 · Safari 화면 전체 확대 지원 · 좌석을 누르면 상세 정보가 표시됩니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -632,10 +632,10 @@ with tab_seat:
             room_title = f'{seat_floor} · {room_choice}'
             room_title_json = json.dumps(room_title, ensure_ascii=False)
             component_html = f"""
-            <!doctype html><html><head><meta charset='utf-8'><style>
+            <!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=5,user-scalable=yes'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
               .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
-              .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;-webkit-overflow-scrolling:touch;touch-action:none}}
+              .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;touch-action:pan-x pan-y pinch-zoom}}
               .stage{{position:relative;flex:none}}
               .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
               .seat{{position:absolute;z-index:2;width:54px;height:30px;overflow:hidden;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
@@ -657,9 +657,6 @@ with tab_seat:
               .zone::after{{content:attr(data-sub);position:absolute;left:50%;bottom:-25px;transform:translateX(-50%);font-size:12px;font-weight:800;color:#334155;white-space:nowrap}}
               .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
               .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
-              .zoom-controls{{display:flex;align-items:center;gap:6px;width:max-content;margin:0 0 14px;padding:5px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc}}
-              .zoom-controls button{{width:32px;height:32px;padding:0;border:1px solid #cbd5e1;border-radius:7px;background:white;color:#1d3a6e;font-size:18px;font-weight:800;cursor:pointer}}
-              .zoom-controls button:last-child{{width:48px;font-size:11px}} .zoom-controls button:active{{background:#eff6ff}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
               .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
               .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
@@ -676,50 +673,27 @@ with tab_seat:
                 <div class='viewport' id='viewport'>
                   <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
                 </div>
-                <aside class='panel'><div class='zoom-controls'><button id='zoomOut' aria-label='축소'>−</button><button id='zoomIn' aria-label='확대'>＋</button><button id='zoomFit'>맞춤</button></div><div id='panel'><div class='empty'>두 손가락으로 확대하거나<br>좌석을 눌러 정보를 확인하세요.</div></div></aside>
+                <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 표시됩니다.</div></aside>
               </div>
               <script>
+                // 같은 출처로 허용되는 경우 Streamlit 상위 문서도 Safari 기본 확대를 허용한다.
+                try {{
+                  const parentViewport=window.parent.document.querySelector('meta[name="viewport"]');
+                  if(parentViewport) parentViewport.setAttribute('content','width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=5,user-scalable=yes');
+                }} catch (_) {{}}
                 const seats={payload}; const mapItems={map_payload}; const roomTitle={room_title_json};
                 const naturalWidth={board_width}, naturalHeight={board_height};
                 const viewport=document.getElementById('viewport'), stage=document.getElementById('stage');
                 const canvas=document.getElementById('canvas'), panel=document.getElementById('panel');
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
-                let fitScale=1, zoomFactor=1;
-                function applyScale(){{
-                  const scale=fitScale*zoomFactor;
-                  canvas.style.transform=`scale(${{scale}})`;
-                  stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
-                  const zoomed=zoomFactor>1.01;
-                  viewport.style.overflow=zoomed?'auto':'hidden';
-                  viewport.style.justifyContent=zoomed?'flex-start':'center';
-                }}
                 function fitBoard(){{
                   const styles=getComputedStyle(viewport);
                   const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
                   const usableH=viewport.clientHeight-parseFloat(styles.paddingTop)-parseFloat(styles.paddingBottom);
-                  fitScale=Math.min(usableW/naturalWidth,usableH/naturalHeight);
-                  applyScale();
+                  const scale=Math.min(usableW/naturalWidth,usableH/naturalHeight);
+                  canvas.style.transform=`scale(${{scale}})`;
+                  stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
                 }}
-                document.getElementById('zoomIn').onclick=()=>{{zoomFactor=Math.min(3,zoomFactor+.25);applyScale();}};
-                document.getElementById('zoomOut').onclick=()=>{{zoomFactor=Math.max(1,zoomFactor-.25);applyScale();}};
-                document.getElementById('zoomFit').onclick=()=>{{zoomFactor=1;viewport.scrollTo(0,0);applyScale();}};
-                let gestureStartFactor=1;
-                viewport.addEventListener('gesturestart',e=>{{gestureStartFactor=zoomFactor;e.preventDefault();}},{{passive:false}});
-                viewport.addEventListener('gesturechange',e=>{{zoomFactor=Math.max(1,Math.min(3,gestureStartFactor*e.scale));applyScale();e.preventDefault();}},{{passive:false}});
-                const touchDistance=touches=>Math.hypot(touches[0].clientX-touches[1].clientX,touches[0].clientY-touches[1].clientY);
-                let pinchDistance=0,pinchFactor=1,lastTouch=null;
-                viewport.addEventListener('touchstart',e=>{{
-                  if(e.touches.length===2){{pinchDistance=touchDistance(e.touches);pinchFactor=zoomFactor;lastTouch=null;e.preventDefault();}}
-                  else if(e.touches.length===1 && zoomFactor>1.01) lastTouch={{x:e.touches[0].clientX,y:e.touches[0].clientY}};
-                }},{{passive:false}});
-                viewport.addEventListener('touchmove',e=>{{
-                  if(e.touches.length===2 && pinchDistance){{
-                    zoomFactor=Math.max(1,Math.min(3,pinchFactor*touchDistance(e.touches)/pinchDistance));applyScale();e.preventDefault();
-                  }} else if(e.touches.length===1 && lastTouch && zoomFactor>1.01){{
-                    const touch=e.touches[0];viewport.scrollBy(lastTouch.x-touch.clientX,lastTouch.y-touch.clientY);lastTouch={{x:touch.clientX,y:touch.clientY}};e.preventDefault();
-                  }}
-                }},{{passive:false}});
-                viewport.addEventListener('touchend',e=>{{if(e.touches.length<2)pinchDistance=0;if(e.touches.length===0)lastTouch=null;}},{{passive:false}});
                 mapItems.forEach(item=>{{
                   const el=document.createElement('div'); el.className='map-item '+item.kind;
                   el.style.left=item.x+'px'; el.style.top=item.y+'px'; el.style.width=item.w+'px'; el.style.height=item.h+'px';
