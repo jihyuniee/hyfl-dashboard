@@ -5,10 +5,10 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from io import BytesIO
-from html import escape
-from urllib.parse import quote
+import json
 import re
 import gspread
+import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
 from openpyxl import load_workbook
 
@@ -422,7 +422,6 @@ with tab_seat:
           <span><i class='legend-dot' style='background:#e2e8f0;border:1px solid #94a3b8'></i>사용 불가</span>
         </div>""", unsafe_allow_html=True)
 
-        selected_seat = normalize_seat(st.query_params.get('seat', ''))
         board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
         board_df = board_df.copy()
         board_df['행'] = pd.to_numeric(board_df['행'], errors='coerce')
@@ -431,60 +430,104 @@ with tab_seat:
         if board_df.empty:
             empty_state('표시할 좌석이 없습니다.')
         else:
-            min_row, min_col = int(board_df['행'].min()), int(board_df['열'].min())
-            max_col = int(board_df['열'].max()) - min_col + 2
-            seat_html = []
+            # 엑셀의 빈 행 높이를 그대로 늘이지 않고, 실제 좌석 행만 촘촘하게 재배치한다.
+            unique_rows = sorted(int(v) for v in board_df['행'].unique())
+            row_y, current_y, previous_row = {}, 14, None
+            for excel_row in unique_rows:
+                if previous_row is not None:
+                    gap = excel_row - previous_row
+                    current_y += 32 if gap == 1 else (42 if gap <= 3 else 54)
+                row_y[excel_row] = current_y
+                previous_row = excel_row
+            min_col = int(board_df['열'].min())
+            max_col = int(board_df['열'].max())
+            board_width = max(720, (max_col - min_col + 1) * 27 + 70)
+            board_height = max(row_y.values()) + 55
+            seat_items = []
             for _, seat_row in board_df.iterrows():
                 seat = normalize_seat(seat_row['좌석'])
                 seat_type = str(seat_row['좌석유형'])
                 sid = str(safe_int(seat_row.get('지정학번'))) if safe_int(seat_row.get('지정학번')) else ''
                 actual = checked_by_seat.get(seat)
-                css, subtitle = 'seat-neutral', sid[-5:] if sid else ''
+                status, status_label = 'neutral', '오늘 미신청'
+                display_sid = sid
                 if seat_type == '사용불가':
-                    css, subtitle = 'seat-unavailable', '사용불가'
+                    status, status_label, display_sid = 'unavailable', '사용 불가', ''
                 elif seat_type == '자유석':
                     if actual is not None:
                         actual_sid = normalize_student_id(actual)
-                        css = 'seat-free seat-orange' if actual_sid in mismatched_ids else 'seat-free seat-green'
-                        subtitle = actual_sid[-5:]
+                        status = 'free-mismatch' if actual_sid in mismatched_ids else 'free-checked'
+                        status_label, display_sid = ('지정석 불일치' if actual_sid in mismatched_ids else '자유석 체크인'), actual_sid
                     else:
-                        css, subtitle = 'seat-free', '자유석'
+                        status, status_label, display_sid = 'free', '비어 있는 자유석', ''
                 elif actual is not None:
                     actual_sid = normalize_student_id(actual)
-                    css = 'seat-orange' if actual_sid in mismatched_ids else 'seat-green'
-                    subtitle = actual_sid[-5:]
+                    status = 'mismatch' if actual_sid in mismatched_ids else 'checked'
+                    status_label, display_sid = ('지정석 불일치' if actual_sid in mismatched_ids else '정상 체크인'), actual_sid
                 elif sid in mismatched_ids:
-                    css, subtitle = 'seat-orange', f"→{normalize_seat(checked_by_id[sid].get('좌석'))}"
+                    status, status_label = 'mismatch', f"다른 좌석({normalize_seat(checked_by_id[sid].get('좌석'))})에서 체크인"
                 elif sid in expected_ids:
-                    css = 'seat-red'
-                if seat == selected_seat: css += ' seat-selected'
-                grid_row = int(seat_row['행']) - min_row + 1
-                grid_col = int(seat_row['열']) - min_col + 1
-                seat_html.append(
-                    f"<a class='seat {css}' href='?seat={quote(seat)}' target='_self' "
-                    f"style='grid-row:{grid_row};grid-column:{grid_col}/span 2'>"
-                    f"{escape(seat)}<small>{escape(subtitle)}</small></a>")
-            st.markdown(f"<div class='seat-board'><div class='seat-grid' style='grid-template-columns:repeat({max_col},24px)'>"
-                        + ''.join(seat_html) + "</div></div>", unsafe_allow_html=True)
-
-        if selected_seat:
-            selected_cfg = df_seats[df_seats['좌석'].astype(str).str.upper() == selected_seat]
-            if not selected_cfg.empty:
-                cfg = selected_cfg.iloc[0]
-                assigned_sid = str(safe_int(cfg.get('지정학번'))) if safe_int(cfg.get('지정학번')) else ''
-                actual = checked_by_seat.get(selected_seat)
-                display_sid = normalize_student_id(actual) if actual is not None else assigned_sid
+                    status, status_label = 'missing', '오늘 신청 · 미체크인'
                 info = apps_by_id.get(display_sid, {})
-                st.markdown(f"<div class='section-title'>좌석 {escape(selected_seat)} 상세</div>", unsafe_allow_html=True)
-                d1,d2,d3,d4 = st.columns(4)
-                d1.metric('학생', str(info.get('성명','미배정')))
-                d2.metric('학번', display_sid or '-')
-                d3.metric('지정 좌석', assigned_by_id.get(display_sid, '자유석'))
-                d4.metric('체크인 좌석', normalize_seat(actual.get('좌석')) if actual is not None else '-')
-                if display_sid in mismatched_ids:
-                    st.warning(f"지정석 불일치: {assigned_by_id[display_sid]} 지정 학생이 {normalize_seat(actual.get('좌석'))}에서 체크인했습니다.")
                 days = ' · '.join(d for d in '월화수목금' if safe_int(info.get(d)) == 1)
-                if days: st.caption(f'신청 요일: {days}')
+                checkin_time = str(actual.get('시간','')) if actual is not None else ''
+                seat_items.append({
+                    'seat':seat, 'studentId':display_sid, 'name':str(info.get('성명','')),
+                    'grade':str(info.get('학년','')), 'classNo':str(info.get('반','')), 'number':str(info.get('번호','')),
+                    'days':days, 'assignedSeat':assigned_by_id.get(display_sid, '자유석' if seat_type == '자유석' else seat),
+                    'actualSeat':normalize_seat(actual.get('좌석')) if actual is not None else '',
+                    'checkinTime':checkin_time, 'status':status, 'statusLabel':status_label,
+                    'seatType':seat_type, 'x':(int(seat_row['열']) - min_col) * 27 + 12,
+                    'y':row_y[int(seat_row['행'])]
+                })
+
+            payload = json.dumps(seat_items, ensure_ascii=False).replace('</', '<\\/')
+            room_title = f'{seat_floor} · {room_choice}'
+            room_title_json = json.dumps(room_title, ensure_ascii=False)
+            component_html = f"""
+            <!doctype html><html><head><meta charset='utf-8'><style>
+              *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
+              .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;height:700px}}
+              .viewport{{overflow:auto;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
+              .canvas{{position:relative;width:{board_width}px;height:{board_height}px;min-height:640px;background-image:radial-gradient(#dbe3ee .7px,transparent .7px);background-size:18px 18px}}
+              .seat{{position:absolute;width:54px;height:30px;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
+              .seat b{{display:block;font-size:10px}} .seat span{{display:block;font-size:8px;margin-top:2px}}
+              .seat:hover,.seat.active{{outline:3px solid #2563eb;outline-offset:2px;z-index:3}}
+              .checked{{background:#dcfce7;border:2px solid #22c55e;color:#166534}}
+              .missing{{background:#fee2e2;border:2px solid #ef4444;color:#991b1b}}
+              .mismatch{{background:#ffedd5;border:2px solid #f97316;color:#9a3412}}
+              .free{{background:white;border:3px solid #ef4444;color:#991b1b}}
+              .free-checked{{background:#dcfce7;border:3px solid #ef4444;box-shadow:inset 0 0 0 2px #22c55e;color:#166534}}
+              .free-mismatch{{background:#ffedd5;border:3px solid #ef4444;box-shadow:inset 0 0 0 2px #f97316;color:#9a3412}}
+              .unavailable{{background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 5px,#f8fafc 5px,#f8fafc 10px);border:1px solid #94a3b8;color:#94a3b8}}
+              .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
+              .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
+              .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
+              .badge{{display:inline-block;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;margin:8px 0 15px;background:#f1f5f9}}
+              .badge.checked{{background:#dcfce7;color:#166534;border:0}} .badge.missing{{background:#fee2e2;color:#991b1b;border:0}} .badge.mismatch,.badge.free-mismatch{{background:#ffedd5;color:#9a3412;border:0}}
+              dl{{margin:0}} dt{{font-size:10px;color:#94a3b8;margin-top:12px}} dd{{margin:3px 0 0;font-size:13px;font-weight:650;color:#334155}}
+              @media(max-width:800px){{.wrap{{grid-template-columns:minmax(0,1fr) 230px;gap:8px}}.panel{{padding:12px}}}}
+            </style></head><body>
+              <div class='wrap'>
+                <div class='viewport'><div class='canvas' id='canvas'></div></div>
+                <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 여기에 표시됩니다.</div></aside>
+              </div>
+              <script>
+                const seats={payload}; const roomTitle={room_title_json}; const canvas=document.getElementById('canvas'); const panel=document.getElementById('panel');
+                const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+                seats.forEach(s=>{{
+                  const el=document.createElement('button'); el.className='seat '+s.status; el.style.left=s.x+'px'; el.style.top=s.y+'px';
+                  el.innerHTML='<b>'+safe(s.seat)+'</b><span>'+safe(s.studentId||s.statusLabel)+'</span>';
+                  el.onclick=()=>{{document.querySelectorAll('.seat.active').forEach(x=>x.classList.remove('active'));el.classList.add('active');
+                    const student=s.name ? `${{safe(s.grade)}}학년 ${{safe(s.classNo)}}반 ${{safe(s.number)}}번 ${{safe(s.name)}}` : (s.seatType==='자유석'?'현재 이용 학생 없음':'배정 학생 없음');
+                    panel.innerHTML=`<h3>${{safe(s.seat)}}</h3><div class='muted'>${{safe(roomTitle)}}</div><span class='badge ${{safe(s.status)}}'>${{safe(s.statusLabel)}}</span><dl>
+                    <dt>학생</dt><dd>${{student}}</dd><dt>학번</dt><dd>${{safe(s.studentId||'-')}}</dd><dt>신청 요일</dt><dd>${{safe(s.days||'-')}}</dd>
+                    <dt>지정 좌석</dt><dd>${{safe(s.assignedSeat||'-')}}</dd><dt>체크인 좌석</dt><dd>${{safe(s.actualSeat||'-')}}</dd><dt>체크인 시각</dt><dd>${{safe(s.checkinTime||'-')}}</dd></dl>`;
+                  }}; canvas.appendChild(el);
+                }});
+              </script></body></html>
+            """
+            components.html(component_html, height=715, scrolling=False)
 
 # ══════════════════════════════════════════════════
 # TAB 1: 오늘 현황
