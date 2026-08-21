@@ -358,7 +358,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v2 · 좌석을 누르면 오른쪽에 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v3 · 패드 화면에 자동 맞춤 · 좌석을 누르면 상세 정보가 표시됩니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -499,6 +499,44 @@ with tab_seat:
                     'y':row_y[int(seat_row['행'])]
                 })
 
+            # 전체 보기에서는 엑셀의 큰 여백을 그대로 두지 않고 패드의 가로 화면에 맞게
+            # 각 자습실의 위쪽을 맞춘 뒤 시설 통로를 사이에 둔다.
+            facility_x_override = None
+            if room_choice == '전체' and '2층' in seat_floor:
+                left_seats = [s for s in seat_items if s['seat'].startswith('C-')]
+                right_seats = [s for s in seat_items if s['seat'].split('-')[0] in {'A','B'}]
+                if left_seats and right_seats:
+                    left_x0, left_y0 = min(s['x'] for s in left_seats), min(s['y'] for s in left_seats)
+                    right_x0, right_y0 = min(s['x'] for s in right_seats), min(s['y'] for s in right_seats)
+                    left_width = max(s['x'] + 54 for s in left_seats) - left_x0
+                    corridor_width = 176
+                    for s in left_seats:
+                        s['x'] = s['x'] - left_x0 + 30
+                        s['y'] = s['y'] - left_y0 + 30
+                    for s in right_seats:
+                        s['x'] = s['x'] - right_x0 + 30 + left_width + corridor_width
+                        s['y'] = s['y'] - right_y0 + 30
+                    facility_x_override = 30 + left_width + 36
+
+            # 4층 내실(E)도 외실(G·H) 왼쪽에 나란히 놓아 상단 공백을 없앤다.
+            outer_shift_x = 0
+            if room_choice == '전체' and '4층' in seat_floor:
+                inner_seats = [s for s in seat_items if s['seat'].startswith('E-')]
+                outer_seats = [s for s in seat_items if s['seat'].split('-')[0] in {'G','H'}]
+                if inner_seats and outer_seats:
+                    inner_left = min(s['x'] for s in inner_seats)
+                    inner_top = min(s['y'] for s in inner_seats)
+                    inner_right = max(s['x'] + 54 for s in inner_seats)
+                    outer_left = min(s['x'] for s in outer_seats)
+                    outer_top = min(s['y'] for s in outer_seats)
+                    inner_width = inner_right - inner_left
+                    outer_shift_x = inner_width + 58
+                    for s in inner_seats:
+                        s['x'] = s['x'] - inner_left + 30
+                        s['y'] = s['y'] - inner_top + outer_top
+                    for s in outer_seats:
+                        s['x'] = s['x'] - outer_left + 30 + outer_shift_x
+
             def seat_bounds(prefixes, padding=12):
                 selected = [s for s in seat_items if s['seat'].split('-')[0] in prefixes]
                 if not selected:
@@ -517,7 +555,7 @@ with tab_seat:
                     map_items.append({**left_zone, 'kind':'zone zone-left', 'label':'좌측 자습실', 'sub':'94석'})
                 if right_zone:
                     map_items.append({**right_zone, 'kind':'zone zone-right', 'label':'우측 자습실', 'sub':'143석'})
-                facility_x = (23 - min_col) * 27 + 12
+                facility_x = facility_x_override if facility_x_override is not None else (23 - min_col) * 27 + 12
                 map_items.extend([
                     {'x':facility_x, 'y':map_excel_y(10), 'w':54, 'h':max(72, map_excel_y(18)-map_excel_y(10)+30),
                      'kind':'facility vertical', 'label':'화장실', 'sub':''},
@@ -533,7 +571,7 @@ with tab_seat:
                     map_items.append({**inner_zone, 'kind':'zone zone-inner', 'label':'내실', 'sub':'40석'})
                 if outer_zone:
                     map_items.append({**outer_zone, 'kind':'zone zone-outer', 'label':'외실', 'sub':'270석'})
-                supervisor_x = (36 - min_col) * 27 + 12
+                supervisor_x = (36 - min_col) * 27 + 12 - outer_left + 30 + outer_shift_x
                 map_items.append({'x':supervisor_x, 'y':map_excel_y(24), 'w':108, 'h':58,
                                   'kind':'facility supervisor', 'label':'감독석', 'sub':''})
                 board_width = max(board_width, supervisor_x + 132)
@@ -608,7 +646,7 @@ with tab_seat:
                   const styles=getComputedStyle(viewport);
                   const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
                   const usableH=viewport.clientHeight-parseFloat(styles.paddingTop)-parseFloat(styles.paddingBottom);
-                  const scale=Math.min(usableW/naturalWidth,usableH/naturalHeight,1);
+                  const scale=Math.min(usableW/naturalWidth,usableH/naturalHeight);
                   canvas.style.transform=`scale(${{scale}})`;
                   stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
                 }}
