@@ -372,7 +372,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v7 · 전체 화면 좌석판 지원 · 좌석을 누르면 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v8 · 좌석 주인과 실제 체크인 학생을 구분해 표시합니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -434,10 +434,11 @@ with tab_seat:
 
         st.markdown("""<div class='legend'>
           <span><i class='legend-dot' style='background:#dcfce7;border:2px solid #22c55e'></i>정상 체크인</span>
-          <span><i class='legend-dot' style='background:#fee2e2;border:2px solid #ef4444'></i>오늘 신청·미체크인</span>
-          <span><i class='legend-dot' style='background:#ffedd5;border:2px solid #f97316'></i>지정석 불일치</span>
+          <span><i class='legend-dot' style='background:#fee2e2;border:2px solid #ef4444'></i>지정석 비어 있음</span>
+          <span><i class='legend-dot' style='background:#ffedd5;border:2px solid #f97316'></i>다른 학생이 체크인</span>
+          <span><i class='legend-dot' style='background:#f1f5f9;border:1px solid #cbd5e1'></i>오늘 미신청</span>
           <span><i class='legend-dot' style='background:white;border:3px solid #ef4444'></i>자유석</span>
-          <span><i class='legend-dot' style='background:#e2e8f0;border:1px solid #94a3b8'></i>사용 불가</span>
+          <span><i class='legend-dot' style='background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 4px,#fff 4px,#fff 8px);border:1px solid #94a3b8'></i>사용 불가</span>
         </div>""", unsafe_allow_html=True)
 
         board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
@@ -484,23 +485,29 @@ with tab_seat:
                 seat_type = str(seat_row['좌석유형'])
                 sid = str(safe_int(seat_row.get('지정학번'))) if safe_int(seat_row.get('지정학번')) else ''
                 actual = checked_by_seat.get(seat)
+                actual_sid = normalize_student_id(actual) if actual is not None else ''
                 status, status_label = 'neutral', '오늘 미신청'
                 display_sid = sid
                 if seat_type == '사용불가':
                     status, status_label, display_sid = 'unavailable', '사용 불가', ''
                 elif seat_type == '자유석':
                     if actual is not None:
-                        actual_sid = normalize_student_id(actual)
                         status = 'free-mismatch' if actual_sid in mismatched_ids else 'free-checked'
                         status_label, display_sid = ('지정석 불일치' if actual_sid in mismatched_ids else '자유석 체크인'), actual_sid
                     else:
                         status, status_label, display_sid = 'free', '비어 있는 자유석', ''
                 elif actual is not None:
-                    actual_sid = normalize_student_id(actual)
-                    status = 'mismatch' if actual_sid in mismatched_ids else 'checked'
-                    status_label, display_sid = ('지정석 불일치' if actual_sid in mismatched_ids else '정상 체크인'), actual_sid
+                    if actual_sid == sid:
+                        status, status_label = 'checked', '정상 체크인'
+                    else:
+                        owner_actual = normalize_seat(checked_by_id.get(sid, {}).get('좌석'))
+                        occupant_assigned = assigned_by_id.get(actual_sid, '')
+                        is_swap = bool(owner_actual and occupant_assigned and owner_actual == occupant_assigned)
+                        status, status_label = 'mismatch', ('상호 자리 교환' if is_swap else '다른 학생이 체크인')
+                    display_sid = actual_sid
                 elif sid in mismatched_ids:
-                    status, status_label = 'mismatch', f"다른 좌석({normalize_seat(checked_by_id[sid].get('좌석'))})에서 체크인"
+                    status = 'missing'
+                    status_label = f"지정석 비어 있음 · {normalize_seat(checked_by_id[sid].get('좌석'))}에서 체크인"
                 elif sid in expected_ids:
                     status, status_label = 'missing', '오늘 신청 · 미체크인'
                 info = apps_by_id.get(display_sid, {})
@@ -509,12 +516,22 @@ with tab_seat:
                 # 학번 기준 기록에서 실제 좌석과 시각을 가져온다.
                 student_checkin = actual if actual is not None else checked_by_id.get(display_sid)
                 checkin_time = str(student_checkin.get('시간','')) if student_checkin is not None else ''
+                owner_info = apps_by_id.get(sid, {})
+                occupant_info = apps_by_id.get(actual_sid, {})
+                owner_days = ' · '.join(d for d in '월화수목금' if safe_int(owner_info.get(d)) == 1)
+                occupant_days = ' · '.join(d for d in '월화수목금' if safe_int(occupant_info.get(d)) == 1)
                 seat_items.append({
                     'seat':seat, 'studentId':display_sid, 'name':str(info.get('성명','')),
                     'grade':str(info.get('학년','')), 'classNo':str(info.get('반','')), 'number':str(info.get('번호','')),
                     'days':days, 'assignedSeat':assigned_by_id.get(display_sid, '자유석' if seat_type == '자유석' else seat),
                     'actualSeat':normalize_seat(student_checkin.get('좌석')) if student_checkin is not None else '',
                     'checkinTime':checkin_time, 'status':status, 'statusLabel':status_label,
+                    'ownerId':sid, 'ownerName':str(owner_info.get('성명','')), 'ownerGrade':str(owner_info.get('학년','')),
+                    'ownerClass':str(owner_info.get('반','')), 'ownerNumber':str(owner_info.get('번호','')), 'ownerDays':owner_days,
+                    'ownerActualSeat':normalize_seat(checked_by_id.get(sid, {}).get('좌석')),
+                    'occupantId':actual_sid, 'occupantName':str(occupant_info.get('성명','')), 'occupantGrade':str(occupant_info.get('학년','')),
+                    'occupantClass':str(occupant_info.get('반','')), 'occupantNumber':str(occupant_info.get('번호','')),
+                    'occupantDays':occupant_days, 'occupantAssignedSeat':assigned_by_id.get(actual_sid, '자유석' if actual_sid else ''),
                     'seatType':seat_type, 'x':(int(seat_row['열']) - min_col) * 27 + 12,
                     'y':row_y[int(seat_row['행'])]
                 })
@@ -657,6 +674,8 @@ with tab_seat:
               .zone::after{{content:attr(data-sub);position:absolute;left:50%;bottom:-25px;transform:translateX(-50%);font-size:12px;font-weight:800;color:#334155;white-space:nowrap}}
               .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
               .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
+              .board-legend{{display:none;gap:14px;flex-wrap:wrap;align-items:center;padding:10px 14px;font-size:12px;color:#475569;background:white}}
+              .board-legend span{{display:flex;align-items:center;white-space:nowrap}} .board-legend i{{width:14px;height:14px;border-radius:4px;display:inline-block;margin-right:5px}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
               .open-board{{width:100%;margin:0 0 14px;padding:11px 12px;border:0;border-radius:10px;background:#1d4ed8;color:white;font-size:13px;font-weight:800;cursor:pointer}}
               .open-board:active{{background:#1e40af}}
@@ -670,9 +689,18 @@ with tab_seat:
                 .panel{{padding:12px}} .empty{{height:100%}} dl{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 10px}}
                 dt{{margin-top:4px}} dd{{font-size:11px}}
               }}
-              body.standalone .wrap{{height:100vh;padding:8px;background:white}}
+              body.standalone .board-legend{{display:flex;height:42px}}
+              body.standalone .wrap{{height:calc(100vh - 42px);padding:8px;background:white}}
               body.standalone .open-board{{display:none}}
             </style></head><body>
+              <div class='board-legend'>
+                <span><i style='background:#dcfce7;border:2px solid #22c55e'></i>정상 체크인</span>
+                <span><i style='background:#fee2e2;border:2px solid #ef4444'></i>지정석 비어 있음</span>
+                <span><i style='background:#ffedd5;border:2px solid #f97316'></i>다른 학생이 체크인</span>
+                <span><i style='background:#f1f5f9;border:1px solid #cbd5e1'></i>오늘 미신청</span>
+                <span><i style='background:white;border:3px solid #ef4444'></i>자유석</span>
+                <span><i style='background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 4px,#fff 4px,#fff 8px);border:1px solid #94a3b8'></i>사용 불가</span>
+              </div>
               <div class='wrap'>
                 <div class='viewport' id='viewport'>
                   <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
@@ -721,10 +749,13 @@ with tab_seat:
                   const el=document.createElement('button'); el.className='seat '+s.status; el.style.left=s.x+'px'; el.style.top=s.y+'px';
                   el.innerHTML='<b>'+safe(s.seat)+'</b><span>'+safe(s.studentId||s.statusLabel)+'</span>';
                   el.onclick=()=>{{document.querySelectorAll('.seat.active').forEach(x=>x.classList.remove('active'));el.classList.add('active');
-                    const student=s.name ? `${{safe(s.grade)}}학년 ${{safe(s.classNo)}}반 ${{safe(s.number)}}번 ${{safe(s.name)}}` : (s.seatType==='자유석'?'현재 이용 학생 없음':'배정 학생 없음');
+                    const person=(id,grade,classNo,number,name,emptyLabel)=>name ? `${{safe(grade)}}학년 ${{safe(classNo)}}반 ${{safe(number)}}번 ${{safe(name)}} (${{safe(id)}})` : emptyLabel;
+                    const owner=person(s.ownerId,s.ownerGrade,s.ownerClass,s.ownerNumber,s.ownerName,s.seatType==='자유석'?'자유석':'배정 학생 없음');
+                    const occupant=person(s.occupantId,s.occupantGrade,s.occupantClass,s.occupantNumber,s.occupantName,'체크인 학생 없음');
                     panel.innerHTML=`<h3>${{safe(s.seat)}}</h3><div class='muted'>${{safe(roomTitle)}}</div><span class='badge ${{safe(s.status)}}'>${{safe(s.statusLabel)}}</span><dl>
-                    <dt>학생</dt><dd>${{student}}</dd><dt>학번</dt><dd>${{safe(s.studentId||'-')}}</dd><dt>신청 요일</dt><dd>${{safe(s.days||'-')}}</dd>
-                    <dt>지정 좌석</dt><dd>${{safe(s.assignedSeat||'-')}}</dd><dt>체크인 좌석</dt><dd>${{safe(s.actualSeat||'-')}}</dd><dt>체크인 시각</dt><dd>${{safe(s.checkinTime||'-')}}</dd></dl>`;
+                    <dt>좌석 주인</dt><dd>${{owner}}</dd><dt>좌석 주인 신청 요일</dt><dd>${{safe(s.ownerDays||'-')}}</dd><dt>좌석 주인 체크인 위치</dt><dd>${{safe(s.ownerActualSeat||'-')}}</dd>
+                    <dt>실제 체크인 학생</dt><dd>${{occupant}}</dd><dt>실제 학생 신청 요일</dt><dd>${{safe(s.occupantDays||'-')}}</dd><dt>실제 학생 지정 좌석</dt><dd>${{safe(s.occupantAssignedSeat||'-')}}</dd>
+                    <dt>체크인 좌석</dt><dd>${{safe(s.actualSeat||'-')}}</dd><dt>체크인 시각</dt><dd>${{safe(s.checkinTime||'-')}}</dd></dl>`;
                   }}; canvas.appendChild(el);
                 }});
                 new ResizeObserver(fitBoard).observe(viewport); fitBoard();
