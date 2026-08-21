@@ -358,7 +358,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v3 · 패드 화면에 자동 맞춤 · 좌석을 누르면 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v4 · ＋/－ 또는 두 손가락으로 확대 · 좌석을 누르면 상세 정보가 표시됩니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -488,12 +488,15 @@ with tab_seat:
                     status, status_label = 'missing', '오늘 신청 · 미체크인'
                 info = apps_by_id.get(display_sid, {})
                 days = ' · '.join(d for d in '월화수목금' if safe_int(info.get(d)) == 1)
-                checkin_time = str(actual.get('시간','')) if actual is not None else ''
+                # 지정석이 비어 있어도 그 학생이 다른 좌석에서 체크인했다면
+                # 학번 기준 기록에서 실제 좌석과 시각을 가져온다.
+                student_checkin = actual if actual is not None else checked_by_id.get(display_sid)
+                checkin_time = str(student_checkin.get('시간','')) if student_checkin is not None else ''
                 seat_items.append({
                     'seat':seat, 'studentId':display_sid, 'name':str(info.get('성명','')),
                     'grade':str(info.get('학년','')), 'classNo':str(info.get('반','')), 'number':str(info.get('번호','')),
                     'days':days, 'assignedSeat':assigned_by_id.get(display_sid, '자유석' if seat_type == '자유석' else seat),
-                    'actualSeat':normalize_seat(actual.get('좌석')) if actual is not None else '',
+                    'actualSeat':normalize_seat(student_checkin.get('좌석')) if student_checkin is not None else '',
                     'checkinTime':checkin_time, 'status':status, 'statusLabel':status_label,
                     'seatType':seat_type, 'x':(int(seat_row['열']) - min_col) * 27 + 12,
                     'y':row_y[int(seat_row['행'])]
@@ -598,7 +601,7 @@ with tab_seat:
             <!doctype html><html><head><meta charset='utf-8'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
               .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
-              .viewport{{overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
+              .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;-webkit-overflow-scrolling:touch}}
               .stage{{position:relative;flex:none}}
               .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
               .seat{{position:absolute;z-index:2;width:54px;height:30px;overflow:hidden;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
@@ -620,6 +623,9 @@ with tab_seat:
               .zone::after{{content:attr(data-sub);position:absolute;left:50%;bottom:-25px;transform:translateX(-50%);font-size:12px;font-weight:800;color:#334155;white-space:nowrap}}
               .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
               .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
+              .zoom-controls{{position:sticky;left:8px;top:8px;z-index:20;display:flex;align-items:center;gap:4px;align-self:flex-start;margin-right:-128px;width:128px;padding:5px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.94);box-shadow:0 2px 8px rgba(15,23,42,.12)}}
+              .zoom-controls button{{width:32px;height:32px;padding:0;border:1px solid #cbd5e1;border-radius:7px;background:white;color:#1d3a6e;font-size:18px;font-weight:800;cursor:pointer}}
+              .zoom-controls button:last-child{{width:48px;font-size:11px}} .zoom-controls button:active{{background:#eff6ff}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
               .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
               .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
@@ -633,7 +639,10 @@ with tab_seat:
               }}
             </style></head><body>
               <div class='wrap'>
-                <div class='viewport' id='viewport'><div class='stage' id='stage'><div class='canvas' id='canvas'></div></div></div>
+                <div class='viewport' id='viewport'>
+                  <div class='zoom-controls'><button id='zoomOut' aria-label='축소'>−</button><button id='zoomIn' aria-label='확대'>＋</button><button id='zoomFit'>맞춤</button></div>
+                  <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
+                </div>
                 <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 여기에 표시됩니다.</div></aside>
               </div>
               <script>
@@ -642,14 +651,28 @@ with tab_seat:
                 const viewport=document.getElementById('viewport'), stage=document.getElementById('stage');
                 const canvas=document.getElementById('canvas'), panel=document.getElementById('panel');
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+                let fitScale=1, zoomFactor=1;
+                function applyScale(){{
+                  const scale=fitScale*zoomFactor;
+                  canvas.style.transform=`scale(${{scale}})`;
+                  stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
+                  const zoomed=zoomFactor>1.01;
+                  viewport.style.overflow=zoomed?'auto':'hidden';
+                  viewport.style.justifyContent=zoomed?'flex-start':'center';
+                }}
                 function fitBoard(){{
                   const styles=getComputedStyle(viewport);
                   const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
                   const usableH=viewport.clientHeight-parseFloat(styles.paddingTop)-parseFloat(styles.paddingBottom);
-                  const scale=Math.min(usableW/naturalWidth,usableH/naturalHeight);
-                  canvas.style.transform=`scale(${{scale}})`;
-                  stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
+                  fitScale=Math.min(usableW/naturalWidth,usableH/naturalHeight);
+                  applyScale();
                 }}
+                document.getElementById('zoomIn').onclick=()=>{{zoomFactor=Math.min(3,zoomFactor+.25);applyScale();}};
+                document.getElementById('zoomOut').onclick=()=>{{zoomFactor=Math.max(.75,zoomFactor-.25);applyScale();}};
+                document.getElementById('zoomFit').onclick=()=>{{zoomFactor=1;viewport.scrollTo(0,0);applyScale();}};
+                let gestureStartFactor=1;
+                viewport.addEventListener('gesturestart',e=>{{gestureStartFactor=zoomFactor;e.preventDefault();}},{{passive:false}});
+                viewport.addEventListener('gesturechange',e=>{{zoomFactor=Math.max(.75,Math.min(3,gestureStartFactor*e.scale));applyScale();e.preventDefault();}},{{passive:false}});
                 mapItems.forEach(item=>{{
                   const el=document.createElement('div'); el.className='map-item '+item.kind;
                   el.style.left=item.x+'px'; el.style.top=item.y+'px'; el.style.width=item.w+'px'; el.style.height=item.h+'px';
