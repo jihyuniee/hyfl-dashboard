@@ -442,7 +442,7 @@ with tab_seat:
                 previous_row = excel_row
             min_col = int(board_df['열'].min())
             max_col = int(board_df['열'].max())
-            board_width = max(720, (max_col - min_col + 1) * 27 + 70)
+            board_width = (max_col - min_col + 1) * 27 + 70
             board_height = max(row_y.values()) + 55
 
             def map_excel_y(excel_row):
@@ -539,6 +539,19 @@ with tab_seat:
                 board_width = max(board_width, supervisor_x + 132)
                 board_height = max(board_height, *(i['y'] + i['h'] + 30 for i in map_items))
 
+            # 엑셀의 빈 열이 아니라 실제 좌석·시설물의 끝을 기준으로 캔버스를 자른다.
+            # 이후 브라우저에서 이 자연 크기를 사용 가능한 화면 안에 비율대로 맞춘다.
+            content_right = max(
+                max(s['x'] + 54 for s in seat_items),
+                max((i['x'] + i['w'] for i in map_items), default=0)
+            )
+            content_bottom = max(
+                max(s['y'] + 30 for s in seat_items),
+                max((i['y'] + i['h'] for i in map_items), default=0)
+            )
+            board_width = max(360, content_right + 24)
+            board_height = max(300, content_bottom + 36)
+
             payload = json.dumps(seat_items, ensure_ascii=False).replace('</', '<\\/')
             map_payload = json.dumps(map_items, ensure_ascii=False).replace('</', '<\\/')
             room_title = f'{seat_floor} · {room_choice}'
@@ -546,11 +559,12 @@ with tab_seat:
             component_html = f"""
             <!doctype html><html><head><meta charset='utf-8'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
-              .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;height:700px}}
-              .viewport{{overflow:auto;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
-              .canvas{{position:relative;width:{board_width}px;height:{board_height}px;min-height:640px;background:#f8fafc}}
-              .seat{{position:absolute;z-index:2;width:54px;height:30px;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
-              .seat b{{display:block;font-size:10px}} .seat span{{display:block;font-size:8px;margin-top:2px}}
+              .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
+              .viewport{{overflow:hidden;display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
+              .stage{{position:relative;flex:none}}
+              .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
+              .seat{{position:absolute;z-index:2;width:54px;height:30px;overflow:hidden;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
+              .seat b{{display:block;font-size:10px;white-space:nowrap}} .seat span{{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:8px;margin-top:2px}}
               .seat:hover,.seat.active{{outline:3px solid #2563eb;outline-offset:2px;z-index:3}}
               .checked{{background:#dcfce7;border:2px solid #22c55e;color:#166534}}
               .missing{{background:#fee2e2;border:2px solid #ef4444;color:#991b1b}}
@@ -574,15 +588,30 @@ with tab_seat:
               .badge{{display:inline-block;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;margin:8px 0 15px;background:#f1f5f9}}
               .badge.checked{{background:#dcfce7;color:#166534;border:0}} .badge.missing{{background:#fee2e2;color:#991b1b;border:0}} .badge.mismatch,.badge.free-mismatch{{background:#ffedd5;color:#9a3412;border:0}}
               dl{{margin:0}} dt{{font-size:10px;color:#94a3b8;margin-top:12px}} dd{{margin:3px 0 0;font-size:13px;font-weight:650;color:#334155}}
-              @media(max-width:800px){{.wrap{{grid-template-columns:minmax(0,1fr) 230px;gap:8px}}.panel{{padding:12px}}}}
+              @media(max-width:900px){{
+                .wrap{{grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr) 168px;gap:8px}}
+                .panel{{padding:12px}} .empty{{height:100%}} dl{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 10px}}
+                dt{{margin-top:4px}} dd{{font-size:11px}}
+              }}
             </style></head><body>
               <div class='wrap'>
-                <div class='viewport'><div class='canvas' id='canvas'></div></div>
+                <div class='viewport' id='viewport'><div class='stage' id='stage'><div class='canvas' id='canvas'></div></div></div>
                 <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 여기에 표시됩니다.</div></aside>
               </div>
               <script>
-                const seats={payload}; const mapItems={map_payload}; const roomTitle={room_title_json}; const canvas=document.getElementById('canvas'); const panel=document.getElementById('panel');
+                const seats={payload}; const mapItems={map_payload}; const roomTitle={room_title_json};
+                const naturalWidth={board_width}, naturalHeight={board_height};
+                const viewport=document.getElementById('viewport'), stage=document.getElementById('stage');
+                const canvas=document.getElementById('canvas'), panel=document.getElementById('panel');
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+                function fitBoard(){{
+                  const styles=getComputedStyle(viewport);
+                  const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
+                  const usableH=viewport.clientHeight-parseFloat(styles.paddingTop)-parseFloat(styles.paddingBottom);
+                  const scale=Math.min(usableW/naturalWidth,usableH/naturalHeight,1);
+                  canvas.style.transform=`scale(${{scale}})`;
+                  stage.style.width=(naturalWidth*scale)+'px'; stage.style.height=(naturalHeight*scale)+'px';
+                }}
                 mapItems.forEach(item=>{{
                   const el=document.createElement('div'); el.className='map-item '+item.kind;
                   el.style.left=item.x+'px'; el.style.top=item.y+'px'; el.style.width=item.w+'px'; el.style.height=item.h+'px';
@@ -600,6 +629,7 @@ with tab_seat:
                     <dt>지정 좌석</dt><dd>${{safe(s.assignedSeat||'-')}}</dd><dt>체크인 좌석</dt><dd>${{safe(s.actualSeat||'-')}}</dd><dt>체크인 시각</dt><dd>${{safe(s.checkinTime||'-')}}</dd></dl>`;
                   }}; canvas.appendChild(el);
                 }});
+                new ResizeObserver(fitBoard).observe(viewport); fitBoard();
               </script></body></html>
             """
             components.html(component_html, height=715, scrolling=False)
