@@ -601,7 +601,7 @@ with tab_seat:
             <!doctype html><html><head><meta charset='utf-8'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
               .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
-              .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;-webkit-overflow-scrolling:touch}}
+              .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;-webkit-overflow-scrolling:touch;touch-action:none}}
               .stage{{position:relative;flex:none}}
               .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
               .seat{{position:absolute;z-index:2;width:54px;height:30px;overflow:hidden;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
@@ -623,7 +623,7 @@ with tab_seat:
               .zone::after{{content:attr(data-sub);position:absolute;left:50%;bottom:-25px;transform:translateX(-50%);font-size:12px;font-weight:800;color:#334155;white-space:nowrap}}
               .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
               .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
-              .zoom-controls{{position:sticky;left:8px;top:8px;z-index:20;display:flex;align-items:center;gap:4px;align-self:flex-start;margin-right:-128px;width:128px;padding:5px;border:1px solid #cbd5e1;border-radius:10px;background:rgba(255,255,255,.94);box-shadow:0 2px 8px rgba(15,23,42,.12)}}
+              .zoom-controls{{display:flex;align-items:center;gap:6px;width:max-content;margin:0 0 14px;padding:5px;border:1px solid #cbd5e1;border-radius:10px;background:#f8fafc}}
               .zoom-controls button{{width:32px;height:32px;padding:0;border:1px solid #cbd5e1;border-radius:7px;background:white;color:#1d3a6e;font-size:18px;font-weight:800;cursor:pointer}}
               .zoom-controls button:last-child{{width:48px;font-size:11px}} .zoom-controls button:active{{background:#eff6ff}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
@@ -640,10 +640,9 @@ with tab_seat:
             </style></head><body>
               <div class='wrap'>
                 <div class='viewport' id='viewport'>
-                  <div class='zoom-controls'><button id='zoomOut' aria-label='축소'>−</button><button id='zoomIn' aria-label='확대'>＋</button><button id='zoomFit'>맞춤</button></div>
                   <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
                 </div>
-                <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 여기에 표시됩니다.</div></aside>
+                <aside class='panel'><div class='zoom-controls'><button id='zoomOut' aria-label='축소'>−</button><button id='zoomIn' aria-label='확대'>＋</button><button id='zoomFit'>맞춤</button></div><div id='panel'><div class='empty'>두 손가락으로 확대하거나<br>좌석을 눌러 정보를 확인하세요.</div></div></aside>
               </div>
               <script>
                 const seats={payload}; const mapItems={map_payload}; const roomTitle={room_title_json};
@@ -668,11 +667,25 @@ with tab_seat:
                   applyScale();
                 }}
                 document.getElementById('zoomIn').onclick=()=>{{zoomFactor=Math.min(3,zoomFactor+.25);applyScale();}};
-                document.getElementById('zoomOut').onclick=()=>{{zoomFactor=Math.max(.75,zoomFactor-.25);applyScale();}};
+                document.getElementById('zoomOut').onclick=()=>{{zoomFactor=Math.max(1,zoomFactor-.25);applyScale();}};
                 document.getElementById('zoomFit').onclick=()=>{{zoomFactor=1;viewport.scrollTo(0,0);applyScale();}};
                 let gestureStartFactor=1;
                 viewport.addEventListener('gesturestart',e=>{{gestureStartFactor=zoomFactor;e.preventDefault();}},{{passive:false}});
-                viewport.addEventListener('gesturechange',e=>{{zoomFactor=Math.max(.75,Math.min(3,gestureStartFactor*e.scale));applyScale();e.preventDefault();}},{{passive:false}});
+                viewport.addEventListener('gesturechange',e=>{{zoomFactor=Math.max(1,Math.min(3,gestureStartFactor*e.scale));applyScale();e.preventDefault();}},{{passive:false}});
+                const touchDistance=touches=>Math.hypot(touches[0].clientX-touches[1].clientX,touches[0].clientY-touches[1].clientY);
+                let pinchDistance=0,pinchFactor=1,lastTouch=null;
+                viewport.addEventListener('touchstart',e=>{{
+                  if(e.touches.length===2){{pinchDistance=touchDistance(e.touches);pinchFactor=zoomFactor;lastTouch=null;e.preventDefault();}}
+                  else if(e.touches.length===1 && zoomFactor>1.01) lastTouch={{x:e.touches[0].clientX,y:e.touches[0].clientY}};
+                }},{{passive:false}});
+                viewport.addEventListener('touchmove',e=>{{
+                  if(e.touches.length===2 && pinchDistance){{
+                    zoomFactor=Math.max(1,Math.min(3,pinchFactor*touchDistance(e.touches)/pinchDistance));applyScale();e.preventDefault();
+                  }} else if(e.touches.length===1 && lastTouch && zoomFactor>1.01){{
+                    const touch=e.touches[0];viewport.scrollBy(lastTouch.x-touch.clientX,lastTouch.y-touch.clientY);lastTouch={{x:touch.clientX,y:touch.clientY}};e.preventDefault();
+                  }}
+                }},{{passive:false}});
+                viewport.addEventListener('touchend',e=>{{if(e.touches.length<2)pinchDistance=0;if(e.touches.length===0)lastTouch=null;}},{{passive:false}});
                 mapItems.forEach(item=>{{
                   const el=document.createElement('div'); el.className='map-item '+item.kind;
                   el.style.left=item.x+'px'; el.style.top=item.y+'px'; el.style.width=item.w+'px'; el.style.height=item.h+'px';
