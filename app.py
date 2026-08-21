@@ -372,7 +372,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v6 · Safari 화면 전체 확대 지원 · 좌석을 누르면 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v7 · 전체 화면 좌석판 지원 · 좌석을 누르면 상세 정보가 표시됩니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -658,6 +658,8 @@ with tab_seat:
               .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
               .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
+              .open-board{{width:100%;margin:0 0 14px;padding:11px 12px;border:0;border-radius:10px;background:#1d4ed8;color:white;font-size:13px;font-weight:800;cursor:pointer}}
+              .open-board:active{{background:#1e40af}}
               .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
               .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
               .badge{{display:inline-block;border-radius:999px;padding:5px 10px;font-size:11px;font-weight:700;margin:8px 0 15px;background:#f1f5f9}}
@@ -668,12 +670,14 @@ with tab_seat:
                 .panel{{padding:12px}} .empty{{height:100%}} dl{{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px 10px}}
                 dt{{margin-top:4px}} dd{{font-size:11px}}
               }}
+              body.standalone .wrap{{height:100vh;padding:8px;background:white}}
+              body.standalone .open-board{{display:none}}
             </style></head><body>
               <div class='wrap'>
                 <div class='viewport' id='viewport'>
                   <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
                 </div>
-                <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 표시됩니다.</div></aside>
+                <aside class='panel'><button class='open-board' id='openBoard'>⛶ 전체 화면 좌석판 열기</button><div id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 표시됩니다.</div></div></aside>
               </div>
               <script>
                 // 같은 출처로 허용되는 경우 Streamlit 상위 문서도 Safari 기본 확대를 허용한다.
@@ -686,6 +690,18 @@ with tab_seat:
                 const viewport=document.getElementById('viewport'), stage=document.getElementById('stage');
                 const canvas=document.getElementById('canvas'), panel=document.getElementById('panel');
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+                const standalone=window.top===window.self;
+                if(standalone){{document.body.classList.add('standalone');document.title='야자 감독 좌석판 · '+roomTitle;}}
+                document.getElementById('openBoard').onclick=()=>{{
+                  const fullPage=window.open('','_blank');
+                  if(!fullPage) return;
+                  const cleanDocument=document.documentElement.cloneNode(true);
+                  cleanDocument.querySelector('#canvas').innerHTML='';
+                  cleanDocument.querySelector('#panel').innerHTML='<div class="empty">좌석을 누르면<br>학생 정보가 표시됩니다.</div>';
+                  fullPage.document.open();
+                  fullPage.document.write('<!doctype html>'+cleanDocument.outerHTML);
+                  fullPage.document.close();
+                }};
                 function fitBoard(){{
                   const styles=getComputedStyle(viewport);
                   const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
