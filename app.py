@@ -106,6 +106,17 @@ def normalize_student_id(row):
 def normalize_seat(v):
     return str(v).strip().upper().replace(' ', '') if is_valid(v) else ''
 
+def find_seat_column(columns):
+    """출석 시트의 좌석/좌석번호/선택 좌석 등 다양한 열 제목을 찾는다."""
+    names = [str(c).strip() for c in columns]
+    if '좌석' in names:
+        return '좌석'
+    for name in names:
+        compact = re.sub(r'[\s_\-()]', '', name).lower()
+        if '좌석' in compact or 'seat' in compact:
+            return name
+    return None
+
 @st.cache_data(ttl=60)
 def load_optional_sheet(key, ws_name):
     try:
@@ -217,6 +228,9 @@ def load_data(key, ws_name):
         if not data: return pd.DataFrame()
         df = pd.DataFrame(data)
         df.columns = df.columns.str.strip()
+        seat_col = find_seat_column(df.columns)
+        if seat_col and seat_col != '좌석':
+            df['좌석'] = df[seat_col]
         if '날짜' in df.columns:
             df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
             df = df.dropna(subset=['날짜'])
@@ -395,7 +409,10 @@ with tab_seat:
         if '교시' in checkins.columns:
             checkins = checkins[checkins['교시'].astype(str) == seat_period]
         checkins['학번키'] = checkins.apply(normalize_student_id, axis=1)
-        seat_source = checkins['좌석'] if '좌석' in checkins.columns else pd.Series('', index=checkins.index)
+        seat_col = find_seat_column(checkins.columns)
+        seat_source = checkins[seat_col] if seat_col else pd.Series('', index=checkins.index)
+        if seat_col:
+            checkins['좌석'] = seat_source
         checkins['좌석키'] = seat_source.apply(normalize_seat)
         checked_by_id = {r['학번키']:r for _,r in checkins.iterrows() if r['학번키']}
         checked_by_seat = {r['좌석키']:r for _,r in checkins.iterrows() if r['좌석키']}
