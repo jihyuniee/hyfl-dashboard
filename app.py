@@ -372,7 +372,7 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 # ══════════════════════════════════════════════════
 with tab_seat:
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v4 · ＋/－ 또는 두 손가락으로 확대 · 좌석을 누르면 상세 정보가 표시됩니다.')
+    st.caption('iPad 좌석판 v5 · 빈 공간 없이 자동 맞춤 · 두 손가락 확대 · 좌석을 누르면 상세 정보가 표시됩니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -597,8 +597,25 @@ with tab_seat:
                 board_width = max(board_width, supervisor_x + 132)
                 board_height = max(board_height, *(i['y'] + i['h'] + 30 for i in map_items))
 
-            # 엑셀의 빈 열이 아니라 실제 좌석·시설물의 끝을 기준으로 캔버스를 자른다.
-            # 이후 브라우저에서 이 자연 크기를 사용 가능한 화면 안에 비율대로 맞춘다.
+            # 실제 좌석·시설물의 최상단/최좌측을 기준으로 내부 여백까지 잘라낸다.
+            # 원본 엑셀의 빈 행 좌표가 남아 좌석판 위가 비는 현상을 방지한다.
+            content_left = min(
+                min(s['x'] for s in seat_items),
+                min((i['x'] for i in map_items), default=float('inf'))
+            )
+            content_top = min(
+                min(s['y'] for s in seat_items),
+                min((i['y'] for i in map_items), default=float('inf'))
+            )
+            shift_x, shift_y = content_left - 18, content_top - 18
+            for item in seat_items:
+                item['x'] -= shift_x
+                item['y'] -= shift_y
+            for item in map_items:
+                item['x'] -= shift_x
+                item['y'] -= shift_y
+
+            # 실제 콘텐츠의 끝까지만 캔버스를 만들고 화면 안에 비율대로 맞춘다.
             content_right = max(
                 max(s['x'] + 54 for s in seat_items),
                 max((i['x'] + i['w'] for i in map_items), default=0)
