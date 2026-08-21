@@ -444,6 +444,23 @@ with tab_seat:
             max_col = int(board_df['열'].max())
             board_width = max(720, (max_col - min_col + 1) * 27 + 70)
             board_height = max(row_y.values()) + 55
+
+            def map_excel_y(excel_row):
+                """좌석이 없는 행에 있는 시설물도 압축된 좌석판 높이에 맞춰 배치한다."""
+                if excel_row in row_y:
+                    return row_y[excel_row]
+                lower = [r for r in unique_rows if r < excel_row]
+                upper = [r for r in unique_rows if r > excel_row]
+                if lower and upper:
+                    lo, hi = max(lower), min(upper)
+                    ratio = (excel_row - lo) / (hi - lo)
+                    return round(row_y[lo] + (row_y[hi] - row_y[lo]) * ratio)
+                if lower:
+                    lo = max(lower)
+                    return row_y[lo] + min(54, (excel_row - lo) * 12)
+                hi = min(upper)
+                return max(8, row_y[hi] - min(54, (hi - excel_row) * 12))
+
             seat_items = []
             for _, seat_row in board_df.iterrows():
                 seat = normalize_seat(seat_row['좌석'])
@@ -482,7 +499,48 @@ with tab_seat:
                     'y':row_y[int(seat_row['행'])]
                 })
 
+            def seat_bounds(prefixes, padding=12):
+                selected = [s for s in seat_items if s['seat'].split('-')[0] in prefixes]
+                if not selected:
+                    return None
+                left = min(s['x'] for s in selected) - padding
+                top = min(s['y'] for s in selected) - padding
+                right = max(s['x'] + 54 for s in selected) + padding
+                bottom = max(s['y'] + 30 for s in selected) + padding
+                return {'x':left, 'y':top, 'w':right-left, 'h':bottom-top}
+
+            # 원본 좌석배치표에 표시된 공간과 시설물을 같은 위치 관계로 복원한다.
+            map_items = []
+            if room_choice == '전체' and '2층' in seat_floor:
+                left_zone, right_zone = seat_bounds({'C'}, 18), seat_bounds({'A','B'}, 18)
+                if left_zone:
+                    map_items.append({**left_zone, 'kind':'zone zone-left', 'label':'좌측 자습실', 'sub':'94석'})
+                if right_zone:
+                    map_items.append({**right_zone, 'kind':'zone zone-right', 'label':'우측 자습실', 'sub':'143석'})
+                facility_x = (23 - min_col) * 27 + 12
+                map_items.extend([
+                    {'x':facility_x, 'y':map_excel_y(10), 'w':54, 'h':max(72, map_excel_y(18)-map_excel_y(10)+30),
+                     'kind':'facility vertical', 'label':'화장실', 'sub':''},
+                    {'x':facility_x, 'y':map_excel_y(22), 'w':108, 'h':max(92, map_excel_y(29)-map_excel_y(22)+30),
+                     'kind':'facility', 'label':'충전', 'sub':'스테이션'},
+                    {'x':facility_x, 'y':map_excel_y(34), 'w':54, 'h':max(72, map_excel_y(38)-map_excel_y(34)+30),
+                     'kind':'facility vertical', 'label':'감독실', 'sub':''},
+                ])
+                board_height = max(board_height, *(i['y'] + i['h'] + 30 for i in map_items))
+            elif room_choice == '전체' and '4층' in seat_floor:
+                inner_zone, outer_zone = seat_bounds({'E'}, 18), seat_bounds({'G','H'}, 18)
+                if inner_zone:
+                    map_items.append({**inner_zone, 'kind':'zone zone-inner', 'label':'내실', 'sub':'40석'})
+                if outer_zone:
+                    map_items.append({**outer_zone, 'kind':'zone zone-outer', 'label':'외실', 'sub':'270석'})
+                supervisor_x = (36 - min_col) * 27 + 12
+                map_items.append({'x':supervisor_x, 'y':map_excel_y(24), 'w':108, 'h':58,
+                                  'kind':'facility supervisor', 'label':'감독석', 'sub':''})
+                board_width = max(board_width, supervisor_x + 132)
+                board_height = max(board_height, *(i['y'] + i['h'] + 30 for i in map_items))
+
             payload = json.dumps(seat_items, ensure_ascii=False).replace('</', '<\\/')
+            map_payload = json.dumps(map_items, ensure_ascii=False).replace('</', '<\\/')
             room_title = f'{seat_floor} · {room_choice}'
             room_title_json = json.dumps(room_title, ensure_ascii=False)
             component_html = f"""
@@ -490,8 +548,8 @@ with tab_seat:
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
               .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:14px;height:700px}}
               .viewport{{overflow:auto;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
-              .canvas{{position:relative;width:{board_width}px;height:{board_height}px;min-height:640px;background-image:radial-gradient(#dbe3ee .7px,transparent .7px);background-size:18px 18px}}
-              .seat{{position:absolute;width:54px;height:30px;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
+              .canvas{{position:relative;width:{board_width}px;height:{board_height}px;min-height:640px;background:#f8fafc}}
+              .seat{{position:absolute;z-index:2;width:54px;height:30px;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
               .seat b{{display:block;font-size:10px}} .seat span{{display:block;font-size:8px;margin-top:2px}}
               .seat:hover,.seat.active{{outline:3px solid #2563eb;outline-offset:2px;z-index:3}}
               .checked{{background:#dcfce7;border:2px solid #22c55e;color:#166534}}
@@ -501,6 +559,15 @@ with tab_seat:
               .free-checked{{background:#dcfce7;border:3px solid #ef4444;box-shadow:inset 0 0 0 2px #22c55e;color:#166534}}
               .free-mismatch{{background:#ffedd5;border:3px solid #ef4444;box-shadow:inset 0 0 0 2px #f97316;color:#9a3412}}
               .unavailable{{background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 5px,#f8fafc 5px,#f8fafc 10px);border:1px solid #94a3b8;color:#94a3b8}}
+              .map-item{{position:absolute;z-index:0;pointer-events:none;display:flex;align-items:center;justify-content:center;text-align:center}}
+              .facility{{z-index:1;border:2px solid #64748b;border-radius:5px;background:rgba(255,255,255,.94);font-size:12px;font-weight:800;color:#334155;line-height:1.45;box-shadow:0 2px 5px rgba(15,23,42,.06)}}
+              .facility.vertical{{writing-mode:vertical-rl;letter-spacing:4px}}
+              .facility.supervisor{{border-color:#475569;background:#fff7ed;color:#9a3412}}
+              .zone{{border:2px solid rgba(100,116,139,.35);border-radius:12px;background:rgba(255,255,255,.24)}}
+              .zone::before{{content:attr(data-label);position:absolute;left:10px;top:-12px;border:1px solid #cbd5e1;border-radius:999px;background:white;padding:3px 9px;font-size:10px;font-weight:800;color:#475569;white-space:nowrap}}
+              .zone::after{{content:attr(data-sub);position:absolute;left:50%;bottom:-25px;transform:translateX(-50%);font-size:12px;font-weight:800;color:#334155;white-space:nowrap}}
+              .zone-left{{background:rgba(255,237,213,.18)}} .zone-right{{background:rgba(254,249,195,.18)}}
+              .zone-inner{{background:rgba(243,232,255,.22);border-color:rgba(168,85,247,.35)}} .zone-outer{{background:rgba(219,234,254,.18);border-color:rgba(59,130,246,.3)}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
               .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
               .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
@@ -514,8 +581,15 @@ with tab_seat:
                 <aside class='panel' id='panel'><div class='empty'>좌석을 누르면<br>학생 정보가 여기에 표시됩니다.</div></aside>
               </div>
               <script>
-                const seats={payload}; const roomTitle={room_title_json}; const canvas=document.getElementById('canvas'); const panel=document.getElementById('panel');
+                const seats={payload}; const mapItems={map_payload}; const roomTitle={room_title_json}; const canvas=document.getElementById('canvas'); const panel=document.getElementById('panel');
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
+                mapItems.forEach(item=>{{
+                  const el=document.createElement('div'); el.className='map-item '+item.kind;
+                  el.style.left=item.x+'px'; el.style.top=item.y+'px'; el.style.width=item.w+'px'; el.style.height=item.h+'px';
+                  el.dataset.label=item.label||''; el.dataset.sub=item.sub||'';
+                  if(item.kind.includes('facility')) el.innerHTML='<div>'+safe(item.label)+(item.sub?'<br>'+safe(item.sub):'')+'</div>';
+                  canvas.appendChild(el);
+                }});
                 seats.forEach(s=>{{
                   const el=document.createElement('button'); el.className='seat '+s.status; el.style.left=s.x+'px'; el.style.top=s.y+'px';
                   el.innerHTML='<b>'+safe(s.seat)+'</b><span>'+safe(s.studentId||s.statusLabel)+'</span>';
