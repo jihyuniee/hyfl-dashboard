@@ -598,7 +598,7 @@ with tab_seat:
             <!doctype html><html><head><meta charset='utf-8'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
               .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
-              .viewport{{overflow:hidden;display:flex;align-items:center;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
+              .viewport{{overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px}}
               .stage{{position:relative;flex:none}}
               .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
               .seat{{position:absolute;z-index:2;width:54px;height:30px;overflow:hidden;border-radius:6px;padding:2px;background:#f1f5f9;border:1px solid #cbd5e1;color:#64748b;cursor:pointer;text-align:center;line-height:1.05}}
