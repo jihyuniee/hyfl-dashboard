@@ -256,7 +256,7 @@ def load_data(key, ws_name):
             df['어학과'] = df['반'].apply(get_dept)
         return df
     except Exception as e:
-        st.error(f"데이터 로드 오류: {e}")
+        st.error(f"데이터 로드 오류: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -274,7 +274,7 @@ def load_student_list(key):
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         return df
     except Exception as e:
-        st.warning(f"학생목록 시트 로드 실패: {e}")
+        st.warning(f"학생목록 시트 로드 실패: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
         return pd.DataFrame()
 
 def filter_valid(df):
