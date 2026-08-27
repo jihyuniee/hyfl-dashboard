@@ -275,7 +275,6 @@ def load_student_list(key):
         return df
     except Exception as e:
         st.warning(f"학생목록 시트 로드 실패: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
-        st.code(traceback.format_exc())
         return pd.DataFrame()
 
 def filter_valid(df):
