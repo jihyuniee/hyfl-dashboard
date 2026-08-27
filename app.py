@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from io import BytesIO
 import json
 import re
+import traceback
 import gspread
 import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
@@ -257,6 +258,7 @@ def load_data(key, ws_name):
         return df
     except Exception as e:
         st.error(f"데이터 로드 오류: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
+        st.code(traceback.format_exc())
         return pd.DataFrame()
 
 @st.cache_data(ttl=300)
@@ -275,6 +277,7 @@ def load_student_list(key):
         return df
     except Exception as e:
         st.warning(f"학생목록 시트 로드 실패: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
+        st.code(traceback.format_exc())
         return pd.DataFrame()
 
 def filter_valid(df):
