@@ -489,7 +489,10 @@ with tab_seat:
                 status, status_label = 'neutral', '오늘 미신청'
                 display_sid = sid
                 if seat_type == '사용불가':
-                    status, status_label, display_sid = 'unavailable', '사용 불가', ''
+                    if actual is not None:
+                        status, status_label, display_sid = 'mismatch', '사용 불가석 체크인', actual_sid
+                    else:
+                        status, status_label, display_sid = 'unavailable', '사용 불가', ''
                 elif seat_type == '자유석':
                     if actual is not None:
                         status = 'free-mismatch' if actual_sid in mismatched_ids else 'free-checked'
