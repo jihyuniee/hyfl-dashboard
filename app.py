@@ -277,6 +277,11 @@ def load_data(key, ws_name):
         st.error(f"데이터 로드 오류: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
         return pd.DataFrame()
 
+@st.cache_data(ttl=3600)
+def load_historical_data(key):
+    """전년 비교를 요청했을 때만 작년 시트를 읽고 1시간 캐시한다."""
+    return load_data(key, '출석기록_2025')
+
 @st.cache_data(ttl=300)
 def load_student_list(key):
     """학생목록 시트 로드 — 같은 스프레드시트 내 '학생목록' 워크시트"""
@@ -390,7 +395,6 @@ st.markdown("---")
 # ── 데이터 로드 ───────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
     df_all      = load_data(sheet_key, ws_name)
-    df_previous = load_data(sheet_key, '출석기록_2025')
     df_students = load_student_list(sheet_key)
     df_applications = load_optional_sheet(sheet_key, '야자신청')
     df_seats = load_optional_sheet(sheet_key, '좌석설정')
@@ -402,7 +406,6 @@ if df_all.empty:
     st.stop()
 
 df_valid = filter_valid(df_all)
-df_previous_valid = filter_valid(df_previous)
 
 # ── 대시보드 헤더 ─────────────────────────────────────
 st.markdown(f"""
@@ -414,9 +417,9 @@ st.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 
-tab_seat, tab1, tab_compare, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🪑 감독 좌석판", "🏠 오늘 현황", "📊 전년 비교", "🏆 TOP6 시상", "📈 주차별 추이",
-    "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회"
+tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
+    "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
+    "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회", "📊 전년 비교"
 ])
 
 # ══════════════════════════════════════════════════
@@ -950,7 +953,22 @@ with tab_compare:
     st.markdown("<div class='section-title'>📊 2025년 · 2026년 기간별 참여 인원 비교</div>", unsafe_allow_html=True)
     st.caption("각 기간에 한 번이라도 체크인한 학생을 1명으로 계산합니다. 여러 날짜·교시에 참여해도 중복 집계하지 않습니다.")
 
-    if df_previous_valid.empty:
+    if 'historical_compare_loaded' not in st.session_state:
+        st.session_state['historical_compare_loaded'] = False
+    if not st.session_state['historical_compare_loaded']:
+        if st.button('📥 작년 데이터 불러오기', type='primary', key='load_historical_compare'):
+            st.session_state['historical_compare_loaded'] = True
+            st.rerun()
+
+    if st.session_state['historical_compare_loaded']:
+        with st.spinner('2025년 출석 기록을 불러오는 중...'):
+            df_previous_valid = filter_valid(load_historical_data(sheet_key))
+    else:
+        df_previous_valid = pd.DataFrame()
+
+    if not st.session_state['historical_compare_loaded']:
+        st.info("전년 비교가 필요할 때만 작년 데이터를 불러옵니다. 평소 대시보드 시작 속도에는 영향을 주지 않습니다.")
+    elif df_previous_valid.empty:
         empty_state("출석기록_2025 시트를 불러오지 못했거나 작년 데이터가 없습니다.")
     else:
         old_min = df_previous_valid['날짜'].min().date()
