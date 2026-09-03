@@ -63,7 +63,7 @@ st.markdown("""
     .seat-selected { outline:3px solid #2563eb; outline-offset:2px; }
     .legend { display:flex; gap:12px; flex-wrap:wrap; align-items:center; font-size:12px; color:#475569; margin:8px 0 14px; }
     .legend-dot { width:13px; height:13px; border-radius:4px; display:inline-block; margin-right:4px; vertical-align:-2px; }
-    #MainMenu, footer, header { visibility: hidden; }
+    #MainMenu, footer, [data-testid="stHeader"] { visibility: hidden; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -976,24 +976,48 @@ with tab_compare:
         new_min = df_valid['날짜'].min().date()
         new_max = df_valid['날짜'].max().date()
 
+        this_week_start = today - timedelta(days=today.weekday())
+        default_new_start = max(new_min, this_week_start)
+        default_new_end = min(new_max, today)
+        if default_new_start > default_new_end:
+            default_new_start = default_new_end = new_max
+        # 52주(364일)를 빼면 작년에도 같은 요일끼리 정확히 대응한다.
+        default_old_start = default_new_start - timedelta(days=364)
+        default_old_end = default_new_end - timedelta(days=364)
+        default_old_start = min(max(default_old_start, old_min), old_max)
+        default_old_end = min(max(default_old_end, old_min), old_max)
+        if default_old_start > default_old_end:
+            default_old_start = default_old_end = old_max
+
         c_old, c_new = st.columns(2)
         with c_old:
             st.markdown("**2025년 비교 기간**")
-            old_range = st.date_input(
-                "2025년 기간", value=(old_min, old_max), min_value=old_min, max_value=old_max,
-                format="YYYY/MM/DD", label_visibility="collapsed", key="compare_old_range")
+            old_c1, old_c2 = st.columns(2)
+            with old_c1:
+                old_start = st.date_input(
+                    "시작일", value=default_old_start, min_value=old_min, max_value=old_max,
+                    format="YYYY/MM/DD", key="compare_old_start_v2")
+            with old_c2:
+                old_end = st.date_input(
+                    "종료일", value=default_old_end, min_value=old_min, max_value=old_max,
+                    format="YYYY/MM/DD", key="compare_old_end_v2")
         with c_new:
             st.markdown("**2026년 비교 기간**")
-            new_range = st.date_input(
-                "2026년 기간", value=(new_min, new_max), min_value=new_min, max_value=new_max,
-                format="YYYY/MM/DD", label_visibility="collapsed", key="compare_new_range")
+            new_c1, new_c2 = st.columns(2)
+            with new_c1:
+                new_start = st.date_input(
+                    "시작일", value=default_new_start, min_value=new_min, max_value=new_max,
+                    format="YYYY/MM/DD", key="compare_new_start_v2")
+            with new_c2:
+                new_end = st.date_input(
+                    "종료일", value=default_new_end, min_value=new_min, max_value=new_max,
+                    format="YYYY/MM/DD", key="compare_new_end_v2")
 
-        if not (isinstance(old_range, (list,tuple)) and len(old_range)==2 and
-                isinstance(new_range, (list,tuple)) and len(new_range)==2):
-            st.info("두 기간의 시작일과 종료일을 모두 선택해 주세요.")
+        if old_start > old_end or new_start > new_end:
+            st.warning("시작일은 종료일보다 늦을 수 없습니다.")
         else:
-            old_period = add_participant_key(filter_period(df_previous_valid, old_range[0], old_range[1]))
-            new_period = add_participant_key(filter_period(df_valid, new_range[0], new_range[1]))
+            old_period = add_participant_key(filter_period(df_previous_valid, old_start, old_end))
+            new_period = add_participant_key(filter_period(df_valid, new_start, new_end))
             old_total = old_period['_참여자키'].nunique() if not old_period.empty else 0
             new_total = new_period['_참여자키'].nunique() if not new_period.empty else 0
             change = new_total - old_total
@@ -1007,6 +1031,42 @@ with tab_compare:
 
             if old_period.empty or new_period.empty:
                 st.warning("선택한 두 기간 중 한쪽에 출석 기록이 없습니다. 기간을 다시 확인해 주세요.")
+
+            st.markdown("<div class='section-title'>날짜별·학년별 참여 인원</div>", unsafe_allow_html=True)
+            st.caption("두 기간의 첫날부터 같은 순서의 날짜끼리 비교합니다. 기본 설정에서는 같은 요일끼리 대응합니다.")
+            old_days = pd.date_range(old_start, old_end, freq='D')
+            new_days = pd.date_range(new_start, new_end, freq='D')
+            day_rows = []
+            dow_names = ['월','화','수','목','금','토','일']
+
+            def daily_grade_count(d, day, grade=None):
+                if d.empty or '날짜' not in d.columns: return 0
+                selected = d[d['날짜'] == pd.Timestamp(day)]
+                if grade is not None and '학년' in selected.columns:
+                    selected = selected[selected['학년'] == grade]
+                return selected['_참여자키'].nunique() if not selected.empty else 0
+
+            for idx in range(max(len(old_days), len(new_days))):
+                old_day = old_days[idx] if idx < len(old_days) else None
+                new_day = new_days[idx] if idx < len(new_days) else None
+                old_all = daily_grade_count(old_period, old_day) if old_day is not None else 0
+                new_all = daily_grade_count(new_period, new_day) if new_day is not None else 0
+                display_day = new_day if new_day is not None else old_day
+                day_rows.append({
+                    '요일': dow_names[display_day.weekday()] if display_day is not None else '-',
+                    '2025 날짜': old_day.strftime('%m/%d') if old_day is not None else '-',
+                    '2025 1학년': daily_grade_count(old_period, old_day, 1) if old_day is not None else 0,
+                    '2025 2학년': daily_grade_count(old_period, old_day, 2) if old_day is not None else 0,
+                    '2025 3학년': daily_grade_count(old_period, old_day, 3) if old_day is not None else 0,
+                    '2025 전체': old_all,
+                    '2026 날짜': new_day.strftime('%m/%d') if new_day is not None else '-',
+                    '2026 1학년': daily_grade_count(new_period, new_day, 1) if new_day is not None else 0,
+                    '2026 2학년': daily_grade_count(new_period, new_day, 2) if new_day is not None else 0,
+                    '2026 3학년': daily_grade_count(new_period, new_day, 3) if new_day is not None else 0,
+                    '2026 전체': new_all,
+                    '전체 증감': new_all - old_all,
+                })
+            st.dataframe(pd.DataFrame(day_rows), use_container_width=True, hide_index=True)
 
             grade_cmp = compare_counts(
                 old_period, new_period, ['학년'],
@@ -1048,7 +1108,7 @@ with tab_compare:
                     st.dataframe(dept_cmp[['구분','2025년','2026년','증감']].sort_values('구분'),
                                  use_container_width=True, hide_index=True, height=430)
 
-            st.caption(f"선택 기간 · 2025년 {old_range[0]}~{old_range[1]} / 2026년 {new_range[0]}~{new_range[1]}")
+            st.caption(f"선택 기간 · 2025년 {old_start}~{old_end} / 2026년 {new_start}~{new_end}")
 
 # ══════════════════════════════════════════════════
 # TAB 2: TOP6 시상
