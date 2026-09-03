@@ -290,6 +290,38 @@ def filter_period(df, start, end):
     if df.empty or '날짜' not in df.columns: return df
     return df[(df['날짜']>=pd.Timestamp(start)) & (df['날짜']<=pd.Timestamp(end))].copy()
 
+def add_participant_key(df):
+    """연도별로 이메일/학번 형식이 달라도 같은 기준으로 고유 참여자를 센다."""
+    if df.empty: return df.copy()
+    d = df.copy()
+    d['_참여자키'] = ''
+    for col in ['이메일', '학번']:
+        if col in d.columns:
+            values = d[col].fillna('').astype(str).str.strip()
+            missing = d['_참여자키'].eq('')
+            d.loc[missing & values.ne(''), '_참여자키'] = values[missing & values.ne('')]
+    fallback_cols = [c for c in ['학년','반','번호','이름'] if c in d.columns]
+    if fallback_cols:
+        fallback = d[fallback_cols].fillna('').astype(str).agg('|'.join, axis=1)
+        d.loc[d['_참여자키'].eq(''), '_참여자키'] = fallback[d['_참여자키'].eq('')]
+    return d[d['_참여자키'].ne('')]
+
+def compare_counts(old_df, new_df, group_cols, label_fn=None):
+    """두 기간의 고유 참여 학생 수와 증감을 같은 분류 기준으로 합친다."""
+    def summarize(d, value_name):
+        if d.empty or any(c not in d.columns for c in group_cols):
+            return pd.DataFrame(columns=group_cols + [value_name])
+        return d.groupby(group_cols, dropna=False)['_참여자키'].nunique().reset_index(name=value_name)
+    old_s = summarize(old_df, '2025년')
+    new_s = summarize(new_df, '2026년')
+    result = old_s.merge(new_s, on=group_cols, how='outer').fillna(0)
+    for col in ['2025년','2026년']:
+        result[col] = result[col].astype(int)
+    result['증감'] = result['2026년'] - result['2025년']
+    if label_fn and not result.empty:
+        result.insert(0, '구분', result.apply(label_fn, axis=1))
+    return result
+
 # ── 기간 필터 컴포넌트 (TAB 2~5 공용) ────────────────
 def period_filter_ui(tab_key):
     s_key = f"{tab_key}_start"
@@ -340,6 +372,7 @@ st.markdown("---")
 # ── 데이터 로드 ───────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
     df_all      = load_data(sheet_key, ws_name)
+    df_previous = load_data(sheet_key, '출석기록_2025')
     df_students = load_student_list(sheet_key)
     df_applications = load_optional_sheet(sheet_key, '야자신청')
     df_seats = load_optional_sheet(sheet_key, '좌석설정')
@@ -351,6 +384,7 @@ if df_all.empty:
     st.stop()
 
 df_valid = filter_valid(df_all)
+df_previous_valid = filter_valid(df_previous)
 
 # ── 대시보드 헤더 ─────────────────────────────────────
 st.markdown(f"""
@@ -362,8 +396,8 @@ st.markdown(f"""
   </div>
 </div>""", unsafe_allow_html=True)
 
-tab_seat, tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-    "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
+tab_seat, tab1, tab_compare, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "🪑 감독 좌석판", "🏠 오늘 현황", "📊 전년 비교", "🏆 TOP6 시상", "📈 주차별 추이",
     "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회"
 ])
 
@@ -892,7 +926,96 @@ with tab1:
                          use_container_width=True, height=320)
 
 # ══════════════════════════════════════════════════
-# TAB 2: TOP3 시상
+# 전년 비교: 숨김 시트 출석기록_2025와 현재 출석기록 비교
+# ══════════════════════════════════════════════════
+with tab_compare:
+    st.markdown("<div class='section-title'>📊 2025년 · 2026년 기간별 참여 인원 비교</div>", unsafe_allow_html=True)
+    st.caption("각 기간에 한 번이라도 체크인한 학생을 1명으로 계산합니다. 여러 날짜·교시에 참여해도 중복 집계하지 않습니다.")
+
+    if df_previous_valid.empty:
+        empty_state("출석기록_2025 시트를 불러오지 못했거나 작년 데이터가 없습니다.")
+    else:
+        old_min = df_previous_valid['날짜'].min().date()
+        old_max = df_previous_valid['날짜'].max().date()
+        new_min = df_valid['날짜'].min().date()
+        new_max = df_valid['날짜'].max().date()
+
+        c_old, c_new = st.columns(2)
+        with c_old:
+            st.markdown("**2025년 비교 기간**")
+            old_range = st.date_input(
+                "2025년 기간", value=(old_min, old_max), min_value=old_min, max_value=old_max,
+                format="YYYY/MM/DD", label_visibility="collapsed", key="compare_old_range")
+        with c_new:
+            st.markdown("**2026년 비교 기간**")
+            new_range = st.date_input(
+                "2026년 기간", value=(new_min, new_max), min_value=new_min, max_value=new_max,
+                format="YYYY/MM/DD", label_visibility="collapsed", key="compare_new_range")
+
+        if not (isinstance(old_range, (list,tuple)) and len(old_range)==2 and
+                isinstance(new_range, (list,tuple)) and len(new_range)==2):
+            st.info("두 기간의 시작일과 종료일을 모두 선택해 주세요.")
+        else:
+            old_period = add_participant_key(filter_period(df_previous_valid, old_range[0], old_range[1]))
+            new_period = add_participant_key(filter_period(df_valid, new_range[0], new_range[1]))
+            old_total = old_period['_참여자키'].nunique() if not old_period.empty else 0
+            new_total = new_period['_참여자키'].nunique() if not new_period.empty else 0
+            change = new_total - old_total
+            rate = ((change / old_total) * 100) if old_total else None
+
+            m1,m2,m3,m4 = st.columns(4)
+            with m1: st.metric("2025년 참여", f"{old_total}명")
+            with m2: st.metric("2026년 참여", f"{new_total}명")
+            with m3: st.metric("증감", f"{change:+d}명")
+            with m4: st.metric("증감률", f"{rate:+.1f}%" if rate is not None else "-")
+
+            if old_period.empty or new_period.empty:
+                st.warning("선택한 두 기간 중 한쪽에 출석 기록이 없습니다. 기간을 다시 확인해 주세요.")
+
+            grade_cmp = compare_counts(
+                old_period, new_period, ['학년'],
+                lambda r: f"{int(r['학년'])}학년" if pd.notna(r['학년']) else '미확인')
+            if not grade_cmp.empty:
+                st.markdown("<div class='section-title'>학년별 비교</div>", unsafe_allow_html=True)
+                chart_df = grade_cmp.melt(id_vars=['구분'], value_vars=['2025년','2026년'],
+                                          var_name='연도', value_name='참여 학생 수')
+                fig = px.bar(chart_df, x='구분', y='참여 학생 수', color='연도', barmode='group',
+                             text='참여 학생 수', color_discrete_map={'2025년':'#94a3b8','2026년':'#2d7ef7'})
+                fig.update_traces(textposition='outside')
+                fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=330,
+                                  margin=dict(t=20,b=20), legend_title_text='')
+                st.plotly_chart(fig, use_container_width=True)
+                st.dataframe(grade_cmp[['구분','2025년','2026년','증감']],
+                             use_container_width=True, hide_index=True)
+
+            class_cmp = compare_counts(
+                old_period, new_period, ['학년','반'],
+                lambda r: make_label(r['학년'], r['반']))
+            dept_cmp = compare_counts(
+                old_period, new_period, ['어학과'],
+                lambda r: str(r['어학과']))
+
+            left, right = st.columns(2)
+            with left:
+                st.markdown("<div class='section-title'>반별 비교</div>", unsafe_allow_html=True)
+                if class_cmp.empty:
+                    empty_state("반별 비교 데이터가 없습니다.")
+                else:
+                    class_cmp = class_cmp[class_cmp['구분']!='미확인'].sort_values(['학년','반'])
+                    st.dataframe(class_cmp[['구분','2025년','2026년','증감']],
+                                 use_container_width=True, hide_index=True, height=430)
+            with right:
+                st.markdown("<div class='section-title'>어학과별 비교</div>", unsafe_allow_html=True)
+                if dept_cmp.empty:
+                    empty_state("어학과별 비교 데이터가 없습니다.")
+                else:
+                    st.dataframe(dept_cmp[['구분','2025년','2026년','증감']].sort_values('구분'),
+                                 use_container_width=True, hide_index=True, height=430)
+
+            st.caption(f"선택 기간 · 2025년 {old_range[0]}~{old_range[1]} / 2026년 {new_range[0]}~{new_range[1]}")
+
+# ══════════════════════════════════════════════════
+# TAB 2: TOP6 시상
 # ══════════════════════════════════════════════════
 with tab2:
     start_date, end_date = period_filter_ui("t2")
