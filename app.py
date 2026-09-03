@@ -224,10 +224,28 @@ def load_data(key, ws_name):
     try:
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
         ws    = gspread.authorize(creds).open_by_key(key).worksheet(ws_name)
-        data  = ws.get_all_records()
-        if not data: return pd.DataFrame()
-        df = pd.DataFrame(data)
-        df.columns = df.columns.str.strip()
+        # 과거 시트에는 우측의 빈 열 제목이 여러 개 남아 있을 수 있다.
+        # get_all_records()는 중복된 빈 헤더를 오류로 처리하므로 값 전체를 읽고
+        # 제목이 있는 열만 골라 DataFrame을 만든다. 시트 숨김 여부와는 무관하다.
+        values = ws.get_all_values()
+        if not values: return pd.DataFrame()
+        raw_headers = [str(v).strip() for v in values[0]]
+        used, keep_indices, headers = {}, [], []
+        for idx, header in enumerate(raw_headers):
+            if not header:
+                continue
+            used[header] = used.get(header, 0) + 1
+            unique_header = header if used[header] == 1 else f"{header}_{used[header]}"
+            keep_indices.append(idx)
+            headers.append(unique_header)
+        if not keep_indices: return pd.DataFrame()
+        rows = []
+        for row in values[1:]:
+            normalized = [row[i] if i < len(row) else '' for i in keep_indices]
+            if any(str(v).strip() for v in normalized):
+                rows.append(normalized)
+        if not rows: return pd.DataFrame(columns=headers)
+        df = pd.DataFrame(rows, columns=headers)
         seat_col = find_seat_column(df.columns)
         if seat_col and seat_col != '좌석':
             df['좌석'] = df[seat_col]
