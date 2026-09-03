@@ -117,7 +117,7 @@ def find_seat_column(columns):
             return name
     return None
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=300)
 def load_optional_sheet(key, ws_name):
     try:
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
