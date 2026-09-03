@@ -886,8 +886,10 @@ with tab1:
                    cnt(df_today_v,3,p1_label),cnt(df_today_v,None,p1_label)],
         '3교시':  [cnt(df_today_v,1,p2_label),cnt(df_today_v,2,p2_label),
                    cnt(df_today_v,3,p2_label),cnt(df_today_v,None,p2_label)],
+        # 1교시와 3교시를 더하지 않고, 그날 한 번이라도 참여한 학생을 1명으로 센다.
+        '합계':    [cnt(df_today_v,1),cnt(df_today_v,2),
+                   cnt(df_today_v,3),cnt(df_today_v)],
     }
-    data_table['합계'] = [a+b for a,b in zip(data_table['1교시'],data_table['3교시'])]
 
     tbody = ""
     for label,v1,v2,vt in zip(data_table['학년'],data_table['1교시'],data_table['3교시'],data_table['합계']):
@@ -903,7 +905,7 @@ with tab1:
         <th style='padding:16px 24px;text-align:left;font-size:0.95rem;width:22%'>학년</th>
         <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>1교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>16:10 ~ 17:40</span></th>
         <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>3교시<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>18:40 ~ 21:50</span></th>
-        <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>합계</th>
+        <th style='padding:16px;text-align:center;font-size:0.95rem;width:26%'>참여 인원<br><span style='font-size:0.75rem;opacity:0.8;font-weight:400'>중복 제외</span></th>
       </tr></thead><tbody>{tbody}</tbody></table>""", unsafe_allow_html=True)
 
     if df_today_v.empty:
