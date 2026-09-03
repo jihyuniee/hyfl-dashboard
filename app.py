@@ -447,6 +447,8 @@ with tab_seat:
         with c_room:
             rooms = floor_df['공간'].dropna().astype(str).unique().tolist()
             room_choice = st.selectbox('구역', ['전체'] + rooms, key='seat_board_room')
+        board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
+        board_df = board_df.copy()
         with c_refresh:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             if st.button('🔄', help='새로고침', key='seat_board_refresh'):
@@ -458,6 +460,12 @@ with tab_seat:
         apps_by_id = apps.set_index('학번키').to_dict('index')
         expected_ids = set(apps.loc[pd.to_numeric(apps[day_name], errors='coerce').fillna(0) > 0, '학번키']) \
                        if day_name in apps.columns else set()
+        # 선택한 자습실의 학년만 오늘 대상에 포함한다.
+        if '학년' in apps.columns:
+            app_grades = pd.to_numeric(apps['학년'], errors='coerce')
+            allowed_grades = [1] if '2층' in seat_floor else [2, 3]
+            floor_student_ids = set(apps.loc[app_grades.isin(allowed_grades), '학번키'])
+            expected_ids &= floor_student_ids
 
         checkins = df_valid.copy()
         checkins = checkins[checkins['날짜'] == pd.Timestamp(seat_day)] if '날짜' in checkins.columns else checkins.iloc[0:0]
@@ -475,17 +483,22 @@ with tab_seat:
         fixed = df_seats[df_seats['좌석유형'].astype(str) == '지정석'].copy()
         assigned_by_id = {str(safe_int(r['지정학번'])):normalize_seat(r['좌석'])
                           for _,r in fixed.iterrows() if safe_int(r['지정학번'])}
+        scoped_fixed = board_df[board_df['좌석유형'].astype(str) == '지정석'].copy()
+        scoped_assigned_by_id = {str(safe_int(r['지정학번'])):normalize_seat(r['좌석'])
+                                 for _,r in scoped_fixed.iterrows() if safe_int(r['지정학번'])}
         mismatched_ids = {sid for sid,r in checked_by_id.items()
                           if sid in assigned_by_id and normalize_seat(r.get('좌석')) != assigned_by_id[sid]}
-        expected_fixed = expected_ids.intersection(assigned_by_id)
-        normal_count = sum(sid in checked_by_id and sid not in mismatched_ids for sid in expected_fixed)
+        expected_fixed = expected_ids.intersection(scoped_assigned_by_id)
+        scoped_mismatched_ids = {sid for sid in expected_fixed if sid in checked_by_id and
+                                 normalize_seat(checked_by_id[sid].get('좌석')) != scoped_assigned_by_id[sid]}
+        normal_count = sum(sid in checked_by_id and sid not in scoped_mismatched_ids for sid in expected_fixed)
         missing_count = sum(sid not in checked_by_id for sid in expected_fixed)
 
         m1,m2,m3,m4 = st.columns(4)
         m1.metric('오늘 지정석 대상', f'{len(expected_fixed)}명')
         m2.metric('정상 체크인', f'{normal_count}명')
         m3.metric('미체크인', f'{missing_count}명')
-        m4.metric('지정석 불일치', f'{len(mismatched_ids)}명')
+        m4.metric('지정석 불일치', f'{len(scoped_mismatched_ids)}명')
 
         st.markdown("""<div class='legend'>
           <span><i class='legend-dot' style='background:#dcfce7;border:2px solid #22c55e'></i>정상 체크인</span>
@@ -496,8 +509,6 @@ with tab_seat:
           <span><i class='legend-dot' style='background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 4px,#fff 4px,#fff 8px);border:1px solid #94a3b8'></i>사용 불가</span>
         </div>""", unsafe_allow_html=True)
 
-        board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
-        board_df = board_df.copy()
         board_df['행'] = pd.to_numeric(board_df['행'], errors='coerce')
         board_df['열'] = pd.to_numeric(board_df['열'], errors='coerce')
         board_df = board_df.dropna(subset=['행','열'])
