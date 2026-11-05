@@ -329,6 +329,63 @@ def add_participant_key(df):
         d.loc[d['_참여자키'].eq(''), '_참여자키'] = fallback[d['_참여자키'].eq('')]
     return d[d['_참여자키'].ne('')]
 
+def floor_attendance(df, seats):
+    """실제 체크인 좌석의 설정으로 층을 판별하고 학생·날짜 중복을 제거한다."""
+    d = add_participant_key(df)
+    if d.empty:
+        return pd.DataFrame(columns=['날짜', '층', '_참여자키'])
+    seat_floors = {}
+    if not seats.empty and {'좌석', '층'}.issubset(seats.columns):
+        for _, row in seats.iterrows():
+            floor = str(row['층'])
+            label = '2층' if '2층' in floor else '4층' if '4층' in floor else '층 미확인'
+            seat_floors[normalize_seat(row['좌석'])] = label
+    seat_col = find_seat_column(d.columns)
+    d['층'] = d[seat_col].apply(normalize_seat).map(seat_floors).fillna('층 미확인') if seat_col else '층 미확인'
+    return d.drop_duplicates(['날짜', '층', '_참여자키'])
+
+
+def show_floor_attendance(df, seats):
+    st.markdown("### 층별 참여 현황")
+    if df.empty or '날짜' not in df.columns:
+        empty_state('선택 기간에 데이터가 없습니다.')
+        return
+    attendance = floor_attendance(df, seats)
+    dates = sorted(df['날짜'].dropna().unique())
+    if not dates:
+        return
+    labels = ['2층', '4층']
+    if attendance['층'].eq('층 미확인').any():
+        labels.append('층 미확인')
+    daily = (attendance.groupby(['날짜', '층'])['_참여자키'].nunique()
+             .reindex(pd.MultiIndex.from_product([dates, labels], names=['날짜', '층']), fill_value=0)
+             .reset_index(name='학생수'))
+    cols = st.columns(len(labels))
+    summary = []
+    for col, floor in zip(cols, labels):
+        rows = attendance[attendance['층'].eq(floor)]
+        counts = daily[daily['층'].eq(floor)]['학생수']
+        unique = rows['_참여자키'].nunique()
+        total = len(rows)
+        average = total / len(dates)
+        with col:
+            st.metric(f'{floor} 참여 학생', f'{unique}명')
+            st.caption(f'일평균 {average:.1f}명 · 참여일 {int(counts.gt(0).sum())}/{len(dates)}일 · 누적 {total}명·일')
+        summary.append({'층': floor, '참여 학생(명)': unique, '일평균(명)': round(average, 1),
+                        '참여일(일)': int(counts.gt(0).sum()), '누적(명·일)': total})
+    st.caption('실제 체크인 좌석으로 층을 구분합니다. 같은 날 같은 층의 여러 교시 참여는 1명으로 집계합니다. 일평균은 선택 기간 중 전체 출석 기록이 있는 날짜를 기준으로 하며, 두 층을 이용한 학생은 각 층에 포함됩니다.')
+    if '층 미확인' in labels:
+        st.caption('좌석이 없거나 좌석설정과 일치하지 않는 기록은 층 미확인으로 표시합니다.')
+    fig = px.line(daily, x='날짜', y='학생수', color='층', text='학생수', markers=True,
+                  title='선택 기간 층별 일일 참여 인원',
+                  color_discrete_map={'2층': '#2d7ef7', '4층': '#f59e0b', '층 미확인': '#94a3b8'})
+    fig.update_traces(texttemplate='%{text}명', textposition='top center', cliponaxis=False)
+    fig.update_layout(plot_bgcolor='white', paper_bgcolor='white', height=360, margin=dict(t=60, b=30))
+    fig.update_yaxes(rangemode='tozero')
+    st.plotly_chart(fig, use_container_width=True)
+    st.dataframe(pd.DataFrame(summary), use_container_width=True, hide_index=True)
+
+
 def compare_counts(old_df, new_df, group_cols, label_fn=None):
     """두 기간의 고유 참여 학생 수와 증감을 같은 분류 기준으로 합친다."""
     def summarize(d, value_name):
@@ -1266,8 +1323,12 @@ with tab3:
         daily = df.groupby('날짜')['이메일'].nunique().reset_index().rename(columns={'이메일':'학생수'}).sort_values('날짜')
         daily['날짜str'] = daily['날짜'].dt.strftime('%m/%d(%a)')
         fig2 = px.area(daily,x='날짜str',y='학생수',title="일별 참여 학생 수",color_discrete_sequence=['#2d7ef7'])
-        fig2.update_layout(plot_bgcolor='white',paper_bgcolor='white',height=280,margin=dict(t=40,b=20))
+        fig2.update_traces(mode='lines+markers+text', text=daily['학생수'],
+                           texttemplate='%{text}명', textposition='top center', cliponaxis=False)
+        fig2.update_layout(plot_bgcolor='white',paper_bgcolor='white',height=280,margin=dict(t=60,b=20))
         st.plotly_chart(fig2, use_container_width=True)
+
+    show_floor_attendance(df, df_seats)
 
 # ══════════════════════════════════════════════════
 # TAB 4: 학년·반별
@@ -1323,7 +1384,7 @@ with tab5:
         with cl:
             fig = px.pie(ds,names='어학과',values='고유학생수',title="어학과별 참여 비율",
                          color_discrete_sequence=px.colors.qualitative.Set2,hole=0.4)
-            fig.update_traces(textinfo='label+percent',textfont_size=13)
+            fig.update_traces(textinfo='label+value+percent',textfont_size=13)
             fig.update_layout(height=360,margin=dict(t=40,b=0),paper_bgcolor='white')
             st.plotly_chart(fig, use_container_width=True)
         with cr:
@@ -1336,7 +1397,8 @@ with tab5:
             dd = df.groupby(['날짜','어학과'])['이메일'].nunique().reset_index().rename(columns={'이메일':'학생수'})
             if not dd.empty:
                 fig3 = px.line(dd,x='날짜',y='학생수',color='어학과',title="어학과별 일별 추이",
-                               markers=True,color_discrete_sequence=px.colors.qualitative.Set2)
+                               markers=True,text='학생수',color_discrete_sequence=px.colors.qualitative.Set2)
+                fig3.update_traces(texttemplate='%{text}명', textposition='top center', cliponaxis=False)
                 fig3.update_layout(plot_bgcolor='white',paper_bgcolor='white',height=320,margin=dict(t=40,b=20))
                 st.plotly_chart(fig3, use_container_width=True)
         st.dataframe(ds, use_container_width=True)
@@ -1577,3 +1639,4 @@ if search and not df_valid.empty:
         sc = [c for c in ['날짜','교시','좌석','학년','반','번호','이름','시간'] if c in ds.columns]
         st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
                      use_container_width=True, height=300)
+
