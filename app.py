@@ -357,6 +357,16 @@ def show_floor_attendance(df, seats):
     labels = ['2층', '4층']
     if attendance['층'].eq('층 미확인').any():
         labels.append('층 미확인')
+    st.caption('보고 싶은 층을 체크하세요.')
+    floor_options = st.columns(len(labels))
+    labels = [
+        floor for column, floor in zip(floor_options, labels)
+        if column.checkbox(floor, value=True, key=f'attendance_floor_{floor}')
+    ]
+    if not labels:
+        st.info('표시할 층을 하나 이상 체크해 주세요.')
+        return
+    attendance = attendance[attendance['층'].isin(labels)]
     daily = (attendance.groupby(['날짜', '층'])['_참여자키'].nunique()
              .reindex(pd.MultiIndex.from_product([dates, labels], names=['날짜', '층']), fill_value=0)
              .reset_index(name='학생수'))
