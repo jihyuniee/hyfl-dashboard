@@ -561,6 +561,27 @@ with tab_seat:
         normal_count = sum(sid in checked_by_id and sid not in scoped_mismatched_ids for sid in expected_fixed)
         missing_count = sum(sid not in checked_by_id for sid in expected_fixed)
 
+        # 지정석 신청 여부와 관계없이 실제 체크인 좌석이 이 층인 학생을 센다.
+        floor_seat_keys = set(floor_df['좌석'].apply(normalize_seat)) - {''}
+        board_seat_keys = set(board_df['좌석'].apply(normalize_seat)) - {''}
+        floor_present_ids = {
+            sid for sid, record in checked_by_id.items()
+            if record['좌석키'] in floor_seat_keys
+        }
+        board_present_ids = {
+            sid for sid, record in checked_by_id.items()
+            if record['좌석키'] in board_seat_keys
+        }
+        present_columns = st.columns(2) if room_choice != '전체' else st.columns(1)
+        present_columns[0].metric(f'{seat_floor} 현재 체크인 인원', f'{len(floor_present_ids)}명')
+        if room_choice != '전체':
+            present_columns[1].metric(f'{room_choice} 체크인 인원', f'{len(board_present_ids)}명')
+        st.caption(
+            f'{seat_day:%Y/%m/%d} · {seat_period} · 선택한 층의 실제 체크인 좌석 기준입니다. '
+            '자유석·지정석 불일치 학생도 포함하고, 같은 학생의 중복 체크인은 1명으로 셉니다. '
+            '퇴실 여부는 확인되지 않으므로 현재 재실 인원과 다를 수 있습니다.'
+        )
+
         m1,m2,m3,m4 = st.columns(4)
         m1.metric('오늘 지정석 대상', f'{len(expected_fixed)}명')
         m2.metric('정상 체크인', f'{normal_count}명')
