@@ -17,6 +17,11 @@ st.set_page_config(page_title="한영외고 야자 대시보드", page_icon="�
 
 st.markdown("""
 <style>
+    .block-container, [data-testid="stMainBlockContainer"] {
+        padding-top: 0.75rem !important; padding-bottom: 1rem !important;
+    }
+    [data-testid="stHeader"] { display: none; }
+    .section-title { margin-top: 10px !important; }
     html, body, [class*="css"] { font-family: 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif; }
     [data-testid="metric-container"] {
         background: white; border: 1px solid #e5e7eb;
@@ -489,25 +494,43 @@ def save_feedback(key, screen, author, message):
 
 
 def feedback_ui(key):
-    st.markdown("---")
     if st.session_state.pop('feedback_saved', False):
-        st.success('의견이 등록되었습니다. 감사합니다!')
-    with st.expander('💬 개선 의견 남기기', expanded=False):
-        st.caption('화면에 보이면 좋을 정보나 불편한 점을 남겨 주세요. 학생 개인정보는 적지 말아 주세요.')
+        st.success('요청이 저장되었습니다. 감사합니다! (자동 알림이나 실시간 답변은 제공되지 않습니다.)')
+    with st.expander('💬 감독 중 오류 신고 · 개선 요청', expanded=False):
+        st.caption('체크인했는데 표시되지 않나요? 인원 현황에 필요한 정보가 있나요? 감독 중 발견한 오류와 개선 요청을 이곳에 남겨 주세요.')
         if st.session_state.pop('feedback_clear', False):
             st.session_state['feedback_author'] = ''
             st.session_state['feedback_message'] = ''
+            st.session_state['feedback_student'] = ''
+            st.session_state['feedback_seat'] = ''
         with st.form('feedback_form'):
+            category = st.selectbox('요청 종류', ['체크인 누락 / 오류', '인원 집계 / 표시 오류', '좌석 표시 오류', '보고 싶은 정보 / 기능', '기타 개선 요청'], key='feedback_category')
             screen = st.selectbox('어떤 화면에 대한 의견인가요?',
                 ['감독 좌석판', '오늘 현황', 'TOP6 시상', '주차별 추이', '학년·반별',
                  '어학과별', '담임용 조회', '전년 비교', '전체 / 기타'], key='feedback_screen')
-            author = st.text_input('이름 (선택)', max_chars=50, key='feedback_author')
-            message = st.text_area('개선 의견', placeholder='예: 4층 현재 인원을 더 크게 보여 주세요.',
-                                   max_chars=2000, key='feedback_message')
-            submitted = st.form_submit_button('의견 등록')
+            left, right = st.columns(2)
+            with left:
+                report_date = st.date_input('발생 날짜', value=st.session_state.get('seat_board_day', now_kst().date()), key='feedback_date')
+                report_floor = st.selectbox('층', ['2층', '4층', '전체 / 해당 없음'], key='feedback_floor')
+                student = st.text_input('학생 학번 (필요한 경우만)', max_chars=20, key='feedback_student')
+            with right:
+                report_period = st.selectbox('교시', ['1교시', '3교시', '전체 / 해당 없음'], key='feedback_period')
+                seat = st.text_input('좌석 (선택)', max_chars=30, key='feedback_seat')
+            st.caption('학생 확인이 필요한 오류는 학번만 적어 주세요. 연락처 등 불필요한 개인정보는 적지 말아 주세요.')
+            author = st.text_input('작성 선생님 이름 (선택)', max_chars=50, key='feedback_author')
+            message = st.text_area('오류 상황 또는 개선 요청', placeholder='예: 체크인 완료 화면은 나왔지만 좌석판에 표시되지 않습니다. / 4층 교시별 인원을 보고 싶습니다.',
+                                   max_chars=1700, key='feedback_message')
+            submitted = st.form_submit_button('요청 등록')
         if submitted:
             try:
-                save_feedback(key, screen, author, message)
+                if not message.strip():
+                    raise ValueError('오류 상황 또는 개선 요청을 입력해 주세요.')
+                context = f"[{category}] {report_date:%Y/%m/%d} · {report_floor} · {report_period}"
+                if student.strip():
+                    context += f" · 학번 {student.strip()}"
+                if seat.strip():
+                    context += f" · 좌석 {seat.strip()}"
+                save_feedback(key, screen, author, context + "\n" + message)
             except ValueError as exc:
                 st.warning(str(exc))
             except Exception:
@@ -517,7 +540,7 @@ def feedback_ui(key):
                 st.session_state['feedback_clear'] = True
                 st.rerun()
 
-    with st.expander('🔒 관리자용 개선 의견 목록', expanded=False):
+    with st.expander('🔒 관리자용 오류·개선 요청 목록', expanded=False):
         configured_pin = str(st.secrets.get('supervisor_pin', '')).strip()
         if not configured_pin:
             st.info('감독교사 PIN이 설정되어야 의견 목록을 볼 수 있습니다.')
@@ -549,8 +572,6 @@ sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
 ws_name   = "출석기록"
 today     = now_kst().date()
 
-st.markdown("---")
-
 # ── 데이터 로드 ───────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
     df_all      = load_data(sheet_key, ws_name)
@@ -576,6 +597,8 @@ st.markdown(f"""
     <p style='margin:0;color:#6b7280;font-size:0.82rem'>한영외국어고등학교 &nbsp;·&nbsp; 전체 {len(df_valid)}건</p>
   </div>
 </div>""", unsafe_allow_html=True)
+
+feedback_ui(sheet_key)
 
 tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
     "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
@@ -1764,5 +1787,3 @@ if search and not df_valid.empty:
         st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
                      use_container_width=True, height=300)
 
-
-feedback_ui(sheet_key)
