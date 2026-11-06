@@ -452,6 +452,98 @@ def period_filter_ui(tab_key):
     if rerun_needed: st.rerun()
     return st.session_state[s_key], st.session_state[e_key]
 
+
+# ── 개선 의견: 출석 데이터와 별도 워크시트에 저장 ──────────
+FEEDBACK_HEADERS = ['등록일시', '화면', '작성자', '의견']
+
+
+def feedback_worksheet(key, create=False):
+    creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
+    book = gspread.authorize(creds).open_by_key(key)
+    try:
+        return book.worksheet('개선의견')
+    except gspread.WorksheetNotFound:
+        if not create:
+            return None
+        try:
+            ws = book.add_worksheet(title='개선의견', rows=1000, cols=4)
+        except gspread.exceptions.APIError:
+            # 다른 사용자가 동시에 시트를 만든 경우 기존 시트를 다시 연다.
+            return book.worksheet('개선의견')
+        ws.append_row(FEEDBACK_HEADERS, value_input_option='RAW')
+        return ws
+
+
+def save_feedback(key, screen, author, message):
+    message = message.strip()
+    author = author.strip()
+    if not message:
+        raise ValueError('개선 의견을 입력해 주세요.')
+    if len(message) > 2000 or len(author) > 50:
+        raise ValueError('의견은 2,000자, 이름은 50자 이내로 입력해 주세요.')
+    ws = feedback_worksheet(key, create=True)
+    ws.append_row(
+        [now_kst().strftime('%Y-%m-%d %H:%M:%S'), screen, author, message],
+        value_input_option='RAW',
+    )
+
+
+def feedback_ui(key):
+    st.markdown("---")
+    if st.session_state.pop('feedback_saved', False):
+        st.success('의견이 등록되었습니다. 감사합니다!')
+    with st.expander('💬 개선 의견 남기기', expanded=False):
+        st.caption('화면에 보이면 좋을 정보나 불편한 점을 남겨 주세요. 학생 개인정보는 적지 말아 주세요.')
+        if st.session_state.pop('feedback_clear', False):
+            st.session_state['feedback_author'] = ''
+            st.session_state['feedback_message'] = ''
+        with st.form('feedback_form'):
+            screen = st.selectbox('어떤 화면에 대한 의견인가요?',
+                ['감독 좌석판', '오늘 현황', 'TOP6 시상', '주차별 추이', '학년·반별',
+                 '어학과별', '담임용 조회', '전년 비교', '전체 / 기타'], key='feedback_screen')
+            author = st.text_input('이름 (선택)', max_chars=50, key='feedback_author')
+            message = st.text_area('개선 의견', placeholder='예: 4층 현재 인원을 더 크게 보여 주세요.',
+                                   max_chars=2000, key='feedback_message')
+            submitted = st.form_submit_button('의견 등록')
+        if submitted:
+            try:
+                save_feedback(key, screen, author, message)
+            except ValueError as exc:
+                st.warning(str(exc))
+            except Exception:
+                st.error('의견을 저장하지 못했습니다. 입력 내용은 유지됩니다. 잠시 후 다시 등록해 주세요.')
+            else:
+                st.session_state['feedback_saved'] = True
+                st.session_state['feedback_clear'] = True
+                st.rerun()
+
+    with st.expander('🔒 관리자용 개선 의견 목록', expanded=False):
+        configured_pin = str(st.secrets.get('supervisor_pin', '')).strip()
+        if not configured_pin:
+            st.info('감독교사 PIN이 설정되어야 의견 목록을 볼 수 있습니다.')
+            return
+        entered = st.text_input('감독교사 PIN', type='password', key='feedback_admin_pin')
+        if entered != configured_pin:
+            st.caption('감독교사 PIN을 입력하면 등록된 의견을 확인할 수 있습니다.')
+            return
+        # 인증 전에 의견을 조회하거나 브라우저에 전송하지 않는다.
+        if st.button('의견 목록 불러오기 / 새로고침', key='feedback_load'):
+            try:
+                ws = feedback_worksheet(key)
+                values = ws.get_all_values() if ws is not None else []
+                rows = values[1:] if values and values[0] == FEEDBACK_HEADERS else values
+                rows = [row[:4] + [''] * max(0, 4 - len(row)) for row in rows if any(row)]
+                if not rows:
+                    st.info('아직 등록된 의견이 없습니다.')
+                else:
+                    feedback = pd.DataFrame(rows, columns=FEEDBACK_HEADERS)
+                    st.caption(f'총 {len(feedback)}건 · 최근 등록순')
+                    st.dataframe(feedback.sort_values('등록일시', ascending=False),
+                                 use_container_width=True, hide_index=True)
+            except Exception:
+                st.error('의견 목록을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.')
+
+
 # ── 고정값 ────────────────────────────────────────────
 sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
 ws_name   = "출석기록"
@@ -470,6 +562,7 @@ if df_all.empty:
     st.markdown("""<div style='text-align:center;padding:60px 20px;color:#6b7280'>
         <div style='font-size:40px;margin-bottom:12px'>📭</div>
         <h3>데이터가 없습니다</h3></div>""", unsafe_allow_html=True)
+    feedback_ui(sheet_key)
     st.stop()
 
 df_valid = filter_valid(df_all)
@@ -1671,3 +1764,5 @@ if search and not df_valid.empty:
         st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
                      use_container_width=True, height=300)
 
+
+feedback_ui(sheet_key)
