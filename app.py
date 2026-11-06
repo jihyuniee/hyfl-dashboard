@@ -499,38 +499,19 @@ def feedback_ui(key):
     with st.expander('💬 감독 중 오류 신고 · 개선 요청', expanded=False):
         st.caption('체크인했는데 표시되지 않나요? 인원 현황에 필요한 정보가 있나요? 감독 중 발견한 오류와 개선 요청을 이곳에 남겨 주세요.')
         if st.session_state.pop('feedback_clear', False):
-            st.session_state['feedback_author'] = ''
             st.session_state['feedback_message'] = ''
-            st.session_state['feedback_student'] = ''
-            st.session_state['feedback_seat'] = ''
         with st.form('feedback_form'):
-            category = st.selectbox('요청 종류', ['체크인 누락 / 오류', '인원 집계 / 표시 오류', '좌석 표시 오류', '보고 싶은 정보 / 기능', '기타 개선 요청'], key='feedback_category')
-            screen = st.selectbox('어떤 화면에 대한 의견인가요?',
-                ['감독 좌석판', '오늘 현황', 'TOP6 시상', '주차별 추이', '학년·반별',
-                 '어학과별', '담임용 조회', '전년 비교', '전체 / 기타'], key='feedback_screen')
-            left, right = st.columns(2)
-            with left:
-                report_date = st.date_input('발생 날짜', value=st.session_state.get('seat_board_day', now_kst().date()), key='feedback_date')
-                report_floor = st.selectbox('층', ['2층', '4층', '전체 / 해당 없음'], key='feedback_floor')
-                student = st.text_input('학생 학번 (필요한 경우만)', max_chars=20, key='feedback_student')
-            with right:
-                report_period = st.selectbox('교시', ['1교시', '3교시', '전체 / 해당 없음'], key='feedback_period')
-                seat = st.text_input('좌석 (선택)', max_chars=30, key='feedback_seat')
-            st.caption('학생 확인이 필요한 오류는 학번만 적어 주세요. 연락처 등 불필요한 개인정보는 적지 말아 주세요.')
-            author = st.text_input('작성 선생님 이름 (선택)', max_chars=50, key='feedback_author')
-            message = st.text_area('오류 상황 또는 개선 요청', placeholder='예: 체크인 완료 화면은 나왔지만 좌석판에 표시되지 않습니다. / 4층 교시별 인원을 보고 싶습니다.',
-                                   max_chars=1700, key='feedback_message')
+            report_date = st.date_input('날짜', value=now_kst().date(), key='feedback_date')
+            message = st.text_area('사유 / 요청 내용',
+                placeholder='예: 오늘 4층에서 체크인했는데 좌석판에 표시되지 않습니다. / 층별 인원을 더 크게 보고 싶습니다.',
+                max_chars=1900, key='feedback_message')
+            st.caption('필요한 경우 층·교시·학번·좌석을 내용에 함께 적어 주세요.')
             submitted = st.form_submit_button('요청 등록')
         if submitted:
             try:
                 if not message.strip():
-                    raise ValueError('오류 상황 또는 개선 요청을 입력해 주세요.')
-                context = f"[{category}] {report_date:%Y/%m/%d} · {report_floor} · {report_period}"
-                if student.strip():
-                    context += f" · 학번 {student.strip()}"
-                if seat.strip():
-                    context += f" · 좌석 {seat.strip()}"
-                save_feedback(key, screen, author, context + "\n" + message)
+                    raise ValueError('사유 / 요청 내용을 입력해 주세요.')
+                save_feedback(key, '전체 / 기타', '', f"[발생 날짜 {report_date:%Y/%m/%d}]" + chr(10) + message)
             except ValueError as exc:
                 st.warning(str(exc))
             except Exception:
