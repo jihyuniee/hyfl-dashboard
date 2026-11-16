@@ -224,7 +224,7 @@ def setup_data_ui(key):
             except Exception as e:
                 st.error(f'등록 실패: {e}')
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=30)
 def load_data(key, ws_name):
     try:
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
@@ -277,6 +277,7 @@ def load_data(key, ws_name):
             return '기타'
         if '반' in df.columns:
             df['어학과'] = df['반'].apply(get_dept)
+        df.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
         return df
     except Exception as e:
         st.error(f"데이터 로드 오류: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
@@ -589,9 +590,17 @@ tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
 # ══════════════════════════════════════════════════
 # 감독 좌석판: 신청 요일 + 지정석 + 실제 QR 좌석 비교
 # ══════════════════════════════════════════════════
-with tab_seat:
+@st.fragment(run_every=60)
+def render_seat_board():
+    # Reload inside the fragment; outer-tab data is a snapshot from the full run.
+    today = now_kst().date()
+    live_data = load_data(sheet_key, ws_name)
+    if live_data.empty:
+        st.error('출석 데이터를 확인할 수 없습니다. 잠시 후 다시 조회해 주세요.')
+        return
+    df_valid = filter_valid(live_data)
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v8 · 좌석 주인과 실제 체크인 학생을 구분해 표시합니다.')
+    st.caption('iPad 좌석판 v9 · 1분마다 자동 갱신 · 좌석 주인과 실제 체크인 학생을 구분해 표시합니다.')
     setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
@@ -670,7 +679,7 @@ with tab_seat:
             if record['좌석키'] in board_seat_keys
         }
         present_columns = st.columns(2) if room_choice != '전체' else st.columns(1)
-        present_columns[0].metric(f'{seat_floor} 현재 체크인 인원', f'{len(floor_present_ids)}명')
+        present_columns[0].metric(f'{seat_floor} 체크인 전체 인원', f'{len(floor_present_ids)}명')
         if room_choice != '전체':
             present_columns[1].metric(f'{room_choice} 체크인 인원', f'{len(board_present_ids)}명')
         st.caption(
@@ -679,10 +688,21 @@ with tab_seat:
             '퇴실 여부는 확인되지 않으므로 현재 재실 인원과 다를 수 있습니다.'
         )
 
+        latest_time = '-'
+        if not checkins.empty and '시간' in checkins.columns:
+            # ISO time strings sort chronologically after zero-padding.
+            parsed_times = pd.to_datetime(checkins['시간'].astype(str), format='%H:%M:%S', errors='coerce')
+            if parsed_times.notna().any():
+                latest_time = parsed_times.max().strftime('%H:%M:%S')
+        st.caption(
+            f"마지막 원본 조회: {live_data.attrs.get('loaded_at', '-')} (한국시간) · "
+            f"선택 날짜·교시 최근 체크인: {latest_time} · 자동 갱신 1분"
+        )
+
         m1,m2,m3,m4 = st.columns(4)
         m1.metric('오늘 지정석 대상', f'{len(expected_fixed)}명')
-        m2.metric('정상 체크인', f'{normal_count}명')
-        m3.metric('미체크인', f'{missing_count}명')
+        m2.metric('지정석 정상 체크인', f'{normal_count}명')
+        m3.metric('지정석 대상 중 미체크인', f'{missing_count}명')
         m4.metric('지정석 불일치', f'{len(scoped_mismatched_ids)}명')
 
         st.markdown("""<div class='legend'>
@@ -1016,6 +1036,9 @@ with tab_seat:
               </script></body></html>
             """
             components.html(component_html, height=715, scrolling=False)
+
+with tab_seat:
+    render_seat_board()
 
 # ══════════════════════════════════════════════════
 # TAB 1: 오늘 현황
