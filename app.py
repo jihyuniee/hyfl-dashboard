@@ -609,7 +609,7 @@ st.markdown(f"""
   <span style='font-size:2rem'>🏫</span>
   <div>
     <h1 style='margin:0;font-size:1.7rem;color:#1d3a6e'>야간자율학습 출석 대시보드</h1>
-    <p style='margin:0;color:#6b7280;font-size:0.82rem'>한영외국어고등학교 &nbsp;·&nbsp; 전체 {len(df_valid)}건</p>
+    <p style='margin:0;color:#6b7280;font-size:0.82rem'>한영외국어고등학교 &nbsp;·&nbsp; {'실시간 감독 전용 화면' if board_only else f'전체 {len(df_valid)}건'}</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -1014,7 +1014,7 @@ def render_seat_board():
               .board-legend{{display:none;gap:14px;flex-wrap:wrap;align-items:center;padding:10px 14px;font-size:12px;color:#475569;background:white}}
               .board-legend span{{display:flex;align-items:center;white-space:nowrap}} .board-legend i{{width:14px;height:14px;border-radius:4px;display:inline-block;margin-right:5px}}
               .panel{{border:1px solid #dbe3ee;border-radius:14px;padding:18px;background:white;overflow:auto}}
-              .open-board{{width:100%;margin:0 0 14px;padding:11px 12px;border:0;border-radius:10px;background:#1d4ed8;color:white;font-size:13px;font-weight:800;cursor:pointer}}
+              .open-board{{display:{'none' if board_only else 'block'};width:100%;margin:0 0 14px;padding:11px 12px;border:0;border-radius:10px;background:#1d4ed8;color:white;font-size:13px;font-weight:800;cursor:pointer}}
               .open-board:active{{background:#1e40af}}
               .panel h3{{font-size:16px;margin:0 0 4px;color:#1d3a6e}} .muted{{font-size:11px;color:#94a3b8;margin-bottom:16px}}
               .empty{{height:90%;display:flex;align-items:center;justify-content:center;text-align:center;color:#94a3b8;font-size:13px;line-height:1.6}}
