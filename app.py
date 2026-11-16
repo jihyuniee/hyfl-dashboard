@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from io import BytesIO
 import json
 import re
+import hashlib
+from threading import RLock
 import gspread
 import streamlit.components.v1 as components
 from google.oauth2.service_account import Credentials
@@ -273,15 +275,35 @@ def parse_attendance_values(values):
     df.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
     return df
 
-def attendance_worksheet(key):
+@st.cache_resource(ttl=1800)
+def attendance_connection(key):
     creds = Credentials.from_service_account_info(st.secrets['gcp_service_account'], scopes=SCOPES)
-    return gspread.authorize(creds).open_by_key(key).worksheet('출석기록')
+    ws = gspread.authorize(creds).open_by_key(key).worksheet('출석기록')
+    # requests.Session is shared by gspread: serialize calls across sessions.
+    return ws, RLock()
+
+def read_attendance_ranges(key, ranges):
+    ws, lock = attendance_connection(key)
+    with lock:
+        return ws.batch_get(ranges)
+
+def frame_signature(frame):
+    # Source-fetch timestamps live in attrs and intentionally do not affect this.
+    return hashlib.sha256(frame.to_json(orient='split', date_format='iso').encode()).hexdigest()
+
+def board_signature(frame, day, period):
+    scoped = frame
+    if '날짜' in scoped.columns:
+        scoped = scoped[scoped['날짜'].eq(pd.Timestamp(day))]
+    if '교시' in scoped.columns:
+        scoped = scoped[scoped['교시'].astype(str).eq(period)]
+    return frame_signature(scoped.reset_index(drop=True))
 
 @st.cache_data(ttl=300, max_entries=8)
 def live_day_start(key, day):
     # Read just the date column to locate the first matching row. No fixed tail
     # length: even unusually busy days and unsorted backfilled rows are included.
-    dates = attendance_worksheet(key).get('A:A')
+    dates = read_attendance_ranges(key, ['A:A'])[0]
     parsed = pd.to_datetime(pd.Series([row[0] if row else '' for row in dates[1:]], dtype=str),
                             format='mixed', errors='coerce').dt.normalize()
     matches = parsed.index[parsed.eq(pd.Timestamp(day))]
@@ -292,9 +314,8 @@ def live_day_start(key, day):
 @st.cache_data(ttl=10, max_entries=16)
 def load_live_attendance(key, day):
     start = live_day_start(key, day)
-    ws = attendance_worksheet(key)
     # Open-ended range includes newly appended check-ins without row-count metadata.
-    header, rows = ws.batch_get(['A1:I1', f'A{start}:I'])
+    header, rows = read_attendance_ranges(key, ['A1:I1', f'A{start}:I'])
     frame = parse_attendance_values(list(header) + list(rows))
     if '날짜' in frame.columns:
         frame = frame[frame['날짜'].eq(pd.Timestamp(day))].copy()
@@ -586,15 +607,21 @@ sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
 ws_name   = "출석기록"
 today     = now_kst().date()
 board_only = st.query_params.get('board') == '1'
+menu_options = ['🪑 감독 좌석판', '🏠 오늘 현황', '🏆 TOP6 시상', '📈 주차별 추이',
+                '🏫 학년·반별', '🌍 어학과별', '👩‍🏫 담임용 조회', '📊 전년 비교']
+if 'dashboard_menu' not in st.session_state:
+    st.session_state['dashboard_menu'] = menu_options[0]
+active_menu = menu_options[0] if board_only else st.session_state['dashboard_menu']
+needs_history = active_menu != menu_options[0]
 
 # ── 데이터 로드 ───────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
-    df_all      = pd.DataFrame() if board_only else load_data(sheet_key, ws_name)
-    df_students = pd.DataFrame() if board_only else load_student_list(sheet_key)
-    df_applications = load_optional_sheet(sheet_key, '야자신청')
-    df_seats = load_optional_sheet(sheet_key, '좌석설정')
+    df_all      = pd.DataFrame() if not needs_history else load_data(sheet_key, ws_name)
+    df_students = load_student_list(sheet_key) if active_menu == menu_options[6] else pd.DataFrame()
+    df_applications = load_optional_sheet(sheet_key, '야자신청') if not needs_history else pd.DataFrame()
+    df_seats = load_optional_sheet(sheet_key, '좌석설정') if active_menu in (menu_options[0], menu_options[3]) else pd.DataFrame()
 
-if df_all.empty and not board_only:
+if df_all.empty and needs_history:
     st.markdown("""<div style='text-align:center;padding:60px 20px;color:#6b7280'>
         <div style='font-size:40px;margin-bottom:12px'>📭</div>
         <h3>데이터가 없습니다</h3></div>""", unsafe_allow_html=True)
@@ -609,28 +636,24 @@ st.markdown(f"""
   <span style='font-size:2rem'>🏫</span>
   <div>
     <h1 style='margin:0;font-size:1.7rem;color:#1d3a6e'>야간자율학습 출석 대시보드</h1>
-    <p style='margin:0;color:#6b7280;font-size:0.82rem'>한영외국어고등학교 &nbsp;·&nbsp; {'실시간 감독 전용 화면' if board_only else f'전체 {len(df_valid)}건'}</p>
+    <p style='margin:0;color:#6b7280;font-size:0.82rem'>한영외국어고등학교 &nbsp;·&nbsp; {'실시간 감독 전용 화면' if board_only else ('실시간 감독 좌석판' if not needs_history else f'전체 {len(df_valid)}건')}</p>
   </div>
 </div>""", unsafe_allow_html=True)
 
 feedback_ui(sheet_key)
 
-if board_only:
-    tab_seat = st.container()
-else:
-    tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
-        "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
-        "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회", "📊 전년 비교"
-    ])
+if not board_only:
+    # A keyed radio preserves the existing menu labels but evaluates one page only.
+    st.radio('메뉴', menu_options, horizontal=True, label_visibility='collapsed', key='dashboard_menu')
+
 
 # ══════════════════════════════════════════════════
 # 감독 좌석판: 신청 요일 + 지정석 + 실제 QR 좌석 비교
 # ══════════════════════════════════════════════════
-@st.fragment(run_every=15)
 def render_seat_board():
     today = now_kst().date()
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v10 · 15초마다 자동 확인 · 색상 필터와 선택 좌석 유지')
+    st.caption('iPad 좌석판 v11 · 15초마다 확인 · 출석 변경 시 좌석판 반영')
     if not board_only:
         setup_data_ui(sheet_key)
 
@@ -667,7 +690,7 @@ def render_seat_board():
                 live_day_start.clear()
                 if seat_day != today:
                     load_data.clear()
-                st.rerun(scope='fragment')
+                st.rerun()
 
         snapshot_key = f'live_snapshot_{seat_day}'
         try:
@@ -682,6 +705,8 @@ def render_seat_board():
                 st.info('출석 원본에 연결할 수 없습니다. 새로고침으로 다시 확인해 주세요.')
                 return
         df_valid = filter_valid(live_data)
+        st.session_state['board_seen'] = board_signature(live_data, seat_day, seat_period)
+        st.session_state['board_config_seen'] = (frame_signature(df_applications), frame_signature(df_seats))
 
         day_name = '월화수목금토일'[seat_day.weekday()]
         apps = df_applications.copy()
@@ -751,7 +776,6 @@ def render_seat_board():
             if parsed_times.notna().any():
                 latest_time = parsed_times.max().strftime('%H:%M:%S')
         st.caption(
-            f"마지막 원본 조회: {live_data.attrs.get('loaded_at', '-')} (한국시간) · "
             f"선택 날짜·교시 최근 체크인: {latest_time} · 자동 확인 15초"
         )
 
@@ -1116,8 +1140,36 @@ def render_seat_board():
             """
             components.html(component_html, height=715, scrolling=False)
 
-with tab_seat:
+@st.fragment(run_every=15)
+def poll_seat_board():
+    # Only this small status line reruns while the main board/iframe stays mounted.
+    day = st.session_state.get('seat_board_day', now_kst().date())
+    period = st.session_state.get('seat_board_period', '1교시')
+    snapshot_key = f'live_snapshot_{day}'
+    try:
+        frame = load_live_attendance(sheet_key, day) if day == now_kst().date() else load_data(sheet_key, ws_name)
+        if 'loaded_at' not in frame.attrs:
+            raise RuntimeError('source unavailable')
+        st.session_state[snapshot_key] = frame
+        apps = load_optional_sheet(sheet_key, '야자신청')
+        seats = load_optional_sheet(sheet_key, '좌석설정')
+        if apps.empty or seats.empty:
+            st.warning('신청 명단·좌석 설정을 확인할 수 없습니다. 기존 좌석판을 유지합니다.')
+            return
+        config_changed = (not apps.empty and not seats.empty and
+            st.session_state.get('board_config_seen') != (frame_signature(apps), frame_signature(seats)))
+        if st.session_state.get('board_seen') != board_signature(frame, day, period) or config_changed:
+            # The next full run draws only the currently selected page.
+            st.rerun()
+        st.caption(f"출석 확인 정상 · 마지막 원본 조회: {frame.attrs['loaded_at']} (한국시간) · 15초마다 확인")
+    except Exception:
+        previous = st.session_state.get(snapshot_key)
+        last = previous.attrs.get('loaded_at', '-') if previous is not None else '-'
+        st.warning(f'출석 갱신 지연 · 마지막 성공: {last} · 기존 좌석판을 유지하며 15초마다 다시 확인합니다.')
+
+if active_menu == menu_options[0]:
     render_seat_board()
+    poll_seat_board()
 
 if board_only:
     st.stop()
@@ -1125,7 +1177,7 @@ if board_only:
 # ══════════════════════════════════════════════════
 # TAB 1: 오늘 현황
 # ══════════════════════════════════════════════════
-with tab1:
+if active_menu == menu_options[1]:
     if "tab1_selected_day" not in st.session_state:
         st.session_state["tab1_selected_day"] = today
 
@@ -1252,7 +1304,7 @@ with tab1:
 # ══════════════════════════════════════════════════
 # 전년 비교: 숨김 시트 출석기록_2025와 현재 출석기록 비교
 # ══════════════════════════════════════════════════
-with tab_compare:
+if active_menu == menu_options[7]:
     st.markdown("<div class='section-title'>📊 2025년 · 2026년 기간별 참여 인원 비교</div>", unsafe_allow_html=True)
     st.caption("각 기간에 한 번이라도 체크인한 학생을 1명으로 계산합니다. 여러 날짜·교시에 참여해도 중복 집계하지 않습니다.")
 
@@ -1416,7 +1468,7 @@ with tab_compare:
 # ══════════════════════════════════════════════════
 # TAB 2: TOP6 시상
 # ══════════════════════════════════════════════════
-with tab2:
+if active_menu == menu_options[2]:
     start_date, end_date = period_filter_ui("t2")
     df = filter_period(df_valid, start_date, end_date)
     st.markdown("<div class='section-title'>🏆 기간 내 TOP6 현황</div>", unsafe_allow_html=True)
@@ -1509,7 +1561,7 @@ with tab2:
 # ══════════════════════════════════════════════════
 # TAB 3: 주차별 추이
 # ══════════════════════════════════════════════════
-with tab3:
+if active_menu == menu_options[3]:
     start_date, end_date = period_filter_ui("t3")
     df = filter_period(df_valid, start_date, end_date)
 
@@ -1566,7 +1618,7 @@ with tab3:
 # ══════════════════════════════════════════════════
 # TAB 4: 학년·반별
 # ══════════════════════════════════════════════════
-with tab4:
+if active_menu == menu_options[4]:
     start_date, end_date = period_filter_ui("t4")
     df = filter_period(df_valid, start_date, end_date)
     st.markdown("<div class='section-title'>🏫 학년·반별 출석 현황</div>", unsafe_allow_html=True)
@@ -1602,7 +1654,7 @@ with tab4:
 # ══════════════════════════════════════════════════
 # TAB 5: 어학과별
 # ══════════════════════════════════════════════════
-with tab5:
+if active_menu == menu_options[5]:
     start_date, end_date = period_filter_ui("t5")
     df = filter_period(df_valid, start_date, end_date)
     st.markdown("<div class='section-title'>🌍 어학과별 출석 현황</div>", unsafe_allow_html=True)
@@ -1639,7 +1691,7 @@ with tab5:
 # ══════════════════════════════════════════════════
 # TAB 6: 담임용 조회 — 학생목록 연동 + 요일별 출석표
 # ══════════════════════════════════════════════════
-with tab6:
+if active_menu == menu_options[6]:
     st.markdown("<div class='section-title'>👩‍🏫 담임용 우리 반 출석 조회</div>", unsafe_allow_html=True)
 
     valid_all_g = sorted([int(g) for g in df_valid['학년'].dropna().unique()
@@ -1853,23 +1905,24 @@ with tab6:
             else:
                 empty_state("이번 주 출석 데이터가 없습니다.")
 
-# ── 학생 개인 검색 ────────────────────────────────────
-st.markdown("---")
-st.markdown("<div class='section-title'>🔍 학생 개인 검색</div>", unsafe_allow_html=True)
-search = st.text_input("이름 또는 이메일로 검색", placeholder="예: 홍길동 또는 student@hyfl.hs.kr")
-if search and not df_valid.empty:
-    mask = pd.Series([False]*len(df_valid), index=df_valid.index)
-    if '이름'  in df_valid.columns: mask = mask | df_valid['이름'].astype(str).str.contains(search,na=False)
-    if '이메일' in df_valid.columns: mask = mask | df_valid['이메일'].astype(str).str.contains(search,na=False)
-    ds = df_valid[mask]
-    if ds.empty:
-        empty_state(f"'{search}' 검색 결과가 없습니다.")
-    else:
-        s1,s2,s3 = st.columns(3)
-        with s1: st.metric("총 체크인",f"{len(ds)}건")
-        with s2: st.metric("출석 일수",f"{ds['날짜'].nunique() if '날짜' in ds.columns else 0}일")
-        with s3: st.metric("교시 종류",f"{ds['교시'].nunique() if '교시' in ds.columns else 0}종류")
-        sc = [c for c in ['날짜','교시','좌석','학년','반','번호','이름','시간'] if c in ds.columns]
-        st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
-                     use_container_width=True, height=300)
+if needs_history:
+    # ── 학생 개인 검색 ────────────────────────────────────
+    st.markdown("---")
+    st.markdown("<div class='section-title'>🔍 학생 개인 검색</div>", unsafe_allow_html=True)
+    search = st.text_input("이름 또는 이메일로 검색", placeholder="예: 홍길동 또는 student@hyfl.hs.kr")
+    if search and not df_valid.empty:
+        mask = pd.Series([False]*len(df_valid), index=df_valid.index)
+        if '이름'  in df_valid.columns: mask = mask | df_valid['이름'].astype(str).str.contains(search,na=False)
+        if '이메일' in df_valid.columns: mask = mask | df_valid['이메일'].astype(str).str.contains(search,na=False)
+        ds = df_valid[mask]
+        if ds.empty:
+            empty_state(f"'{search}' 검색 결과가 없습니다.")
+        else:
+            s1,s2,s3 = st.columns(3)
+            with s1: st.metric("총 체크인",f"{len(ds)}건")
+            with s2: st.metric("출석 일수",f"{ds['날짜'].nunique() if '날짜' in ds.columns else 0}일")
+            with s3: st.metric("교시 종류",f"{ds['교시'].nunique() if '교시' in ds.columns else 0}종류")
+            sc = [c for c in ['날짜','교시','좌석','학년','반','번호','이름','시간'] if c in ds.columns]
+            st.dataframe(ds[sc].sort_values('날짜',ascending=False) if '날짜' in sc else ds[sc],
+                         use_container_width=True, height=300)
 
