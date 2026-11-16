@@ -297,7 +297,95 @@ def board_signature(frame, day, period):
         scoped = scoped[scoped['날짜'].eq(pd.Timestamp(day))]
     if '교시' in scoped.columns:
         scoped = scoped[scoped['교시'].astype(str).eq(period)]
+    order = [c for c in ['날짜', '교시', '이메일'] if c in scoped.columns]
+    if order:
+        scoped = scoped.sort_values(order, kind='stable')
     return frame_signature(scoped.reset_index(drop=True))
+
+ATTENDANCE_HEADERS = ['날짜','교시','좌석번호','이메일','시간','학년','반','번호','이름']
+
+def read_pending_log(key):
+    ws, lock = attendance_connection(key)
+    with lock:
+        # One bounded-width values request; no worksheet metadata lookup per poll.
+        return ws.client.values_get(ws.spreadsheet_id, "'출석로그'!A1:F").get('values', [])
+
+def merge_board_attendance(official, log_values, students, day):
+    """Read-only union for supervision. Never writes to reward/statistics records."""
+    target = pd.Timestamp(day)
+    roster = {}
+    if not students.empty and {'이메일','학년','반','번호'}.issubset(students.columns):
+        for _, student in students.iterrows():
+            email = str(student['이메일']).strip().lower()
+            if email:
+                roster[email] = student
+    pending_rows, unmatched, invalid = [], 0, 0
+    if log_values:
+        headers = [str(v).strip() for v in log_values[0]]
+        if headers[:5] not in (['날짜','교시','좌석','이메일','시간'], ['날짜','교시키','좌석','이메일','시간']):
+            raise ValueError('출석로그 열 구성이 변경되었습니다.')
+        for row in log_values[1:]:
+            if not any(str(x).strip() for x in row):
+                continue
+            if len(row) < 5:
+                invalid += 1
+                continue
+            raw_day = row[0]
+            if isinstance(raw_day, (int, float)):
+                date = pd.to_datetime(raw_day, unit='D', origin='1899-12-30', errors='coerce')
+            else:
+                date = pd.to_datetime(str(raw_day), errors='coerce')
+            if pd.isna(date):
+                invalid += 1
+                continue
+            if date.normalize() != target:
+                continue
+            raw_period = str(row[5] if len(row) > 5 and row[5] else row[1]).strip()
+            period = {'P1':'1교시', 'P3':'3교시', '2~3교시':'3교시'}.get(raw_period, raw_period)
+            email = str(row[3]).strip().lower()
+            seat = normalize_seat(row[2])
+            if period not in ('1교시','3교시') or not email or not seat:
+                invalid += 1
+                continue
+            student = roster.get(email)
+            if student is None or not all(safe_int(student.get(c)) for c in ['학년','반','번호']):
+                unmatched += 1
+                continue
+            raw_time = row[4]
+            if isinstance(raw_time, (int, float)):
+                seconds = round((raw_time % 1) * 86400) % 86400
+                time = f'{seconds//3600:02d}:{seconds//60%60:02d}:{seconds%60:02d}'
+            else:
+                time = str(raw_time).strip()
+                parsed_time = pd.to_datetime(time, format='%H:%M:%S', errors='coerce')
+                if pd.isna(parsed_time):
+                    invalid += 1
+                    continue
+                time = parsed_time.strftime('%H:%M:%S')
+            pending_rows.append([date.strftime('%Y-%m-%d'), period, seat, email, time,
+                                 student['학년'], student['반'], student['번호'], student.get('이름','')])
+    if pending_rows and not roster:
+        raise ValueError('학생목록을 불러올 수 없습니다.')
+    pending = parse_attendance_values([ATTENDANCE_HEADERS] + pending_rows)
+    frames = [d for d in (official, pending) if not d.empty]
+    combined = pd.concat(frames, ignore_index=True) if frames else parse_attendance_values([ATTENDANCE_HEADERS])
+    if not combined.empty:
+        if not {'날짜','교시','이메일'}.issubset(combined.columns):
+            raise ValueError('출석기록 열 구성이 변경되었습니다.')
+        combined = combined[combined['날짜'].eq(target)].copy()
+        combined['이메일'] = combined['이메일'].fillna('').astype(str).str.strip().str.lower()
+        combined = combined[combined['이메일'].ne('')]
+        # Final records take precedence; pending copies vanish harmlessly after transfer.
+        official_keys = set(zip(official.get('날짜', []), official.get('교시', []),
+                                official.get('이메일', pd.Series(dtype=str)).astype(str).str.strip().str.lower()))
+        pending_keys = set(zip(pending.get('날짜', []), pending.get('교시', []), pending.get('이메일', [])))
+        combined = combined.drop_duplicates(['날짜','교시','이메일'], keep='first').reset_index(drop=True)
+        pending_count = len(pending_keys - official_keys)
+    else:
+        pending_count = 0
+    combined.attrs.update(loaded_at=now_kst().strftime('%Y/%m/%d %H:%M:%S'),
+                          pending_count=pending_count, unmatched_pending=unmatched, invalid_pending=invalid)
+    return combined
 
 @st.cache_data(ttl=300, max_entries=8)
 def live_day_start(key, day):
@@ -313,14 +401,22 @@ def live_day_start(key, day):
 
 @st.cache_data(ttl=10, max_entries=16)
 def load_live_attendance(key, day):
+    # Read the queue FIRST, then final attendance. The processor commits final
+    # rows before clearing the queue, so a normal transfer between these reads
+    # is covered by at least one source. Reversing this order can miss a transfer.
+    pending_values = read_pending_log(key)
     start = live_day_start(key, day)
     # Open-ended range includes newly appended check-ins without row-count metadata.
     header, rows = read_attendance_ranges(key, ['A1:I1', f'A{start}:I'])
+    if not header or not {'날짜','교시','이메일'}.issubset(str(v).strip() for v in header[0]):
+        raise ValueError('출석기록 열 구성을 확인할 수 없습니다.')
     frame = parse_attendance_values(list(header) + list(rows))
     if '날짜' in frame.columns:
         frame = frame[frame['날짜'].eq(pd.Timestamp(day))].copy()
-    frame.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
-    return frame
+    students = load_student_list(key)
+    if len(pending_values) > 1 and (students.empty or not {'이메일','학년','반','번호'}.issubset(students.columns)):
+        raise ValueError('학생목록 조회 실패: 대기 로그를 확인할 수 없습니다.')
+    return merge_board_attendance(frame, pending_values, students, day)
 
 @st.cache_data(ttl=300)
 def load_data(key, ws_name):
@@ -653,7 +749,7 @@ if not board_only:
 def render_seat_board():
     today = now_kst().date()
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v11 · 15초마다 확인 · 출석 변경 시 좌석판 반영')
+    st.caption('iPad 좌석판 v12 · 출석기록 + 대기 로그 · 15초마다 확인')
     if not board_only:
         setup_data_ui(sheet_key)
 
@@ -1161,7 +1257,11 @@ def poll_seat_board():
         if st.session_state.get('board_seen') != board_signature(frame, day, period) or config_changed:
             # The next full run draws only the currently selected page.
             st.rerun()
-        st.caption(f"출석 확인 정상 · 마지막 원본 조회: {frame.attrs['loaded_at']} (한국시간) · 15초마다 확인")
+        st.caption(f"출석 확인 정상 · 마지막 원본 조회: {frame.attrs['loaded_at']} (한국시간) · 15초마다 확인 · 대기 로그 {frame.attrs.get('pending_count', 0)}명 포함")
+        unmatched = frame.attrs.get('unmatched_pending', 0)
+        invalid = frame.attrs.get('invalid_pending', 0)
+        if unmatched or invalid:
+            st.warning(f'대기 로그 중 학생목록 미확인 {unmatched}건 · 형식 확인 필요 {invalid}건은 인원에 포함하지 않았습니다.')
     except Exception:
         previous = st.session_state.get(snapshot_key)
         last = previous.attrs.get('loaded_at', '-') if previous is not None else '-'
