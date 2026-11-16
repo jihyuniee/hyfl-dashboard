@@ -224,7 +224,84 @@ def setup_data_ui(key):
             except Exception as e:
                 st.error(f'등록 실패: {e}')
 
-@st.cache_data(ttl=30)
+
+def parse_attendance_values(values):
+    if not values: return pd.DataFrame()
+    raw_headers = [str(v).strip() for v in values[0]]
+    used, keep_indices, headers = {}, [], []
+    for idx, header in enumerate(raw_headers):
+        if not header:
+            continue
+        used[header] = used.get(header, 0) + 1
+        unique_header = header if used[header] == 1 else f"{header}_{used[header]}"
+        keep_indices.append(idx)
+        headers.append(unique_header)
+    if not keep_indices: return pd.DataFrame()
+    rows = []
+    for row in values[1:]:
+        normalized = [row[i] if i < len(row) else '' for i in keep_indices]
+        if any(str(v).strip() for v in normalized):
+            rows.append(normalized)
+    if not rows: return pd.DataFrame(columns=headers)
+    df = pd.DataFrame(rows, columns=headers)
+    seat_col = find_seat_column(df.columns)
+    if seat_col and seat_col != '좌석':
+        df['좌석'] = df[seat_col]
+    if '날짜' in df.columns:
+        df['날짜'] = pd.to_datetime(df['날짜'], format='mixed', errors='coerce')
+        df = df.dropna(subset=['날짜'])
+        df['날짜'] = df['날짜'].dt.normalize()
+        df['요일'] = df['날짜'].dt.dayofweek.map({0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'})
+    for col in ['학년','반','번호']:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    # ★ 핵심: '2~3교시' → '3교시' 로 통일
+    if '교시' in df.columns:
+        df['교시'] = df['교시'].str.strip().replace('2~3교시', '3교시')
+    def get_dept(k):
+        try:
+            n = int(k)
+            if n<=2:  return '중국어과'
+            if n<=4:  return '일본어과'
+            if n<=6:  return '독일어과'
+            if n<=8:  return '프랑스어과'
+            if n<=10: return '스페인어과'
+        except: pass
+        return '기타'
+    if '반' in df.columns:
+        df['어학과'] = df['반'].apply(get_dept)
+    df.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
+    return df
+
+def attendance_worksheet(key):
+    creds = Credentials.from_service_account_info(st.secrets['gcp_service_account'], scopes=SCOPES)
+    return gspread.authorize(creds).open_by_key(key).worksheet('출석기록')
+
+@st.cache_data(ttl=300, max_entries=8)
+def live_day_start(key, day):
+    # Read just the date column to locate the first matching row. No fixed tail
+    # length: even unusually busy days and unsorted backfilled rows are included.
+    dates = attendance_worksheet(key).get('A:A')
+    parsed = pd.to_datetime(pd.Series([row[0] if row else '' for row in dates[1:]], dtype=str),
+                            format='mixed', errors='coerce').dt.normalize()
+    matches = parsed.index[parsed.eq(pd.Timestamp(day))]
+    if len(matches):
+        return int(matches[0]) + 2
+    return max(2, len(dates) + 1)
+
+@st.cache_data(ttl=10, max_entries=16)
+def load_live_attendance(key, day):
+    start = live_day_start(key, day)
+    ws = attendance_worksheet(key)
+    # Open-ended range includes newly appended check-ins without row-count metadata.
+    header, rows = ws.batch_get(['A1:I1', f'A{start}:I'])
+    frame = parse_attendance_values(list(header) + list(rows))
+    if '날짜' in frame.columns:
+        frame = frame[frame['날짜'].eq(pd.Timestamp(day))].copy()
+    frame.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
+    return frame
+
+@st.cache_data(ttl=300)
 def load_data(key, ws_name):
     try:
         creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=SCOPES)
@@ -233,52 +310,7 @@ def load_data(key, ws_name):
         # get_all_records()는 중복된 빈 헤더를 오류로 처리하므로 값 전체를 읽고
         # 제목이 있는 열만 골라 DataFrame을 만든다. 시트 숨김 여부와는 무관하다.
         values = ws.get_all_values()
-        if not values: return pd.DataFrame()
-        raw_headers = [str(v).strip() for v in values[0]]
-        used, keep_indices, headers = {}, [], []
-        for idx, header in enumerate(raw_headers):
-            if not header:
-                continue
-            used[header] = used.get(header, 0) + 1
-            unique_header = header if used[header] == 1 else f"{header}_{used[header]}"
-            keep_indices.append(idx)
-            headers.append(unique_header)
-        if not keep_indices: return pd.DataFrame()
-        rows = []
-        for row in values[1:]:
-            normalized = [row[i] if i < len(row) else '' for i in keep_indices]
-            if any(str(v).strip() for v in normalized):
-                rows.append(normalized)
-        if not rows: return pd.DataFrame(columns=headers)
-        df = pd.DataFrame(rows, columns=headers)
-        seat_col = find_seat_column(df.columns)
-        if seat_col and seat_col != '좌석':
-            df['좌석'] = df[seat_col]
-        if '날짜' in df.columns:
-            df['날짜'] = pd.to_datetime(df['날짜'], errors='coerce')
-            df = df.dropna(subset=['날짜'])
-            df['날짜'] = df['날짜'].dt.normalize()
-            df['요일'] = df['날짜'].dt.dayofweek.map({0:'월',1:'화',2:'수',3:'목',4:'금',5:'토',6:'일'})
-        for col in ['학년','반','번호']:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-        # ★ 핵심: '2~3교시' → '3교시' 로 통일
-        if '교시' in df.columns:
-            df['교시'] = df['교시'].str.strip().replace('2~3교시', '3교시')
-        def get_dept(k):
-            try:
-                n = int(k)
-                if n<=2:  return '중국어과'
-                if n<=4:  return '일본어과'
-                if n<=6:  return '독일어과'
-                if n<=8:  return '프랑스어과'
-                if n<=10: return '스페인어과'
-            except: pass
-            return '기타'
-        if '반' in df.columns:
-            df['어학과'] = df['반'].apply(get_dept)
-        df.attrs['loaded_at'] = now_kst().strftime('%Y/%m/%d %H:%M:%S')
-        return df
+        return parse_attendance_values(values)
     except Exception as e:
         st.error(f"데이터 로드 오류: {type(e).__name__}: {str(e) or '상세 정보 없음'}")
         return pd.DataFrame()
@@ -553,15 +585,16 @@ def feedback_ui(key):
 sheet_key = "1LH_AI8jvW-vNn9I8wsj8lIot16vuLzqyjbZfDqcNgM8"
 ws_name   = "출석기록"
 today     = now_kst().date()
+board_only = st.query_params.get('board') == '1'
 
 # ── 데이터 로드 ───────────────────────────────────────
 with st.spinner("데이터 불러오는 중..."):
-    df_all      = load_data(sheet_key, ws_name)
-    df_students = load_student_list(sheet_key)
+    df_all      = pd.DataFrame() if board_only else load_data(sheet_key, ws_name)
+    df_students = pd.DataFrame() if board_only else load_student_list(sheet_key)
     df_applications = load_optional_sheet(sheet_key, '야자신청')
     df_seats = load_optional_sheet(sheet_key, '좌석설정')
 
-if df_all.empty:
+if df_all.empty and not board_only:
     st.markdown("""<div style='text-align:center;padding:60px 20px;color:#6b7280'>
         <div style='font-size:40px;margin-bottom:12px'>📭</div>
         <h3>데이터가 없습니다</h3></div>""", unsafe_allow_html=True)
@@ -582,50 +615,73 @@ st.markdown(f"""
 
 feedback_ui(sheet_key)
 
-tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
-    "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
-    "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회", "📊 전년 비교"
-])
+if board_only:
+    tab_seat = st.container()
+else:
+    tab_seat, tab1, tab2, tab3, tab4, tab5, tab6, tab_compare = st.tabs([
+        "🪑 감독 좌석판", "🏠 오늘 현황", "🏆 TOP6 시상", "📈 주차별 추이",
+        "🏫 학년·반별", "🌍 어학과별", "👩‍🏫 담임용 조회", "📊 전년 비교"
+    ])
 
 # ══════════════════════════════════════════════════
 # 감독 좌석판: 신청 요일 + 지정석 + 실제 QR 좌석 비교
 # ══════════════════════════════════════════════════
-@st.fragment(run_every=60)
+@st.fragment(run_every=15)
 def render_seat_board():
-    # Reload inside the fragment; outer-tab data is a snapshot from the full run.
     today = now_kst().date()
-    live_data = load_data(sheet_key, ws_name)
-    if live_data.empty:
-        st.error('출석 데이터를 확인할 수 없습니다. 잠시 후 다시 조회해 주세요.')
-        return
-    df_valid = filter_valid(live_data)
     st.markdown("<div class='section-title'>🪑 실시간 야자 감독 좌석판</div>", unsafe_allow_html=True)
-    st.caption('iPad 좌석판 v9 · 1분마다 자동 갱신 · 좌석 주인과 실제 체크인 학생을 구분해 표시합니다.')
-    setup_data_ui(sheet_key)
+    st.caption('iPad 좌석판 v10 · 15초마다 자동 확인 · 색상 필터와 선택 좌석 유지')
+    if not board_only:
+        setup_data_ui(sheet_key)
 
     if df_applications.empty or df_seats.empty:
         empty_state("좌석판 초기 데이터가 없습니다. 감독교사 PIN으로 참여조사와 좌석배치표를 한 번 등록해 주세요.")
     else:
-        seat_day = st.date_input('조회 날짜', value=today, max_value=today,
+        try:
+            initial_day = min(today, datetime.strptime(st.query_params.get('day', str(today)), '%Y-%m-%d').date())
+        except ValueError:
+            initial_day = today
+        seat_day = st.date_input('조회 날짜', value=initial_day, max_value=today,
                                  format='YYYY/MM/DD', key='seat_board_day')
-        period_values = df_valid.get('교시', pd.Series(dtype=str)).astype(str).unique().tolist()
-        period_options = [p for p in ['1교시','3교시'] if p in period_values] or ['1교시','3교시']
+        period_options = ['1교시','3교시']
+        if 'seat_board_period' not in st.session_state:
+            requested_period = st.query_params.get('period')
+            st.session_state['seat_board_period'] = requested_period if requested_period in period_options else ('3교시' if now_kst().hour >= 18 else '1교시')
         c_period, c_floor, c_room, c_refresh = st.columns([1,1.4,1.5,.5])
         with c_period:
             seat_period = st.selectbox('교시', period_options, key='seat_board_period')
         with c_floor:
             floors = df_seats['층'].dropna().astype(str).unique().tolist()
-            seat_floor = st.selectbox('자습실', floors, key='seat_board_floor')
+            seat_floor = st.selectbox('자습실', floors, index=floors.index(st.query_params['floor']) if st.query_params.get('floor') in floors else 0, key='seat_board_floor')
         floor_df = df_seats[df_seats['층'].astype(str) == seat_floor].copy()
         with c_room:
             rooms = floor_df['공간'].dropna().astype(str).unique().tolist()
-            room_choice = st.selectbox('구역', ['전체'] + rooms, key='seat_board_room')
+            room_options = ['전체'] + rooms
+            room_choice = st.selectbox('구역', room_options, index=room_options.index(st.query_params['room']) if st.query_params.get('room') in room_options else 0, key='seat_board_room')
         board_df = floor_df if room_choice == '전체' else floor_df[floor_df['공간'].astype(str) == room_choice]
         board_df = board_df.copy()
         with c_refresh:
             st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
             if st.button('🔄', help='새로고침', key='seat_board_refresh'):
-                st.cache_data.clear(); st.rerun()
+                load_live_attendance.clear()
+                live_day_start.clear()
+                if seat_day != today:
+                    load_data.clear()
+                st.rerun(scope='fragment')
+
+        snapshot_key = f'live_snapshot_{seat_day}'
+        try:
+            live_data = load_live_attendance(sheet_key, seat_day) if seat_day == today else load_data(sheet_key, ws_name)
+            if 'loaded_at' not in live_data.attrs:
+                raise RuntimeError('source unavailable')
+            st.session_state[snapshot_key] = live_data
+        except Exception:
+            live_data = st.session_state.get(snapshot_key)
+            st.warning('출석 갱신이 지연되고 있습니다. 마지막 확인 화면을 유지하며 다시 시도합니다.')
+            if live_data is None:
+                st.info('출석 원본에 연결할 수 없습니다. 새로고침으로 다시 확인해 주세요.')
+                return
+        df_valid = filter_valid(live_data)
 
         day_name = '월화수목금토일'[seat_day.weekday()]
         apps = df_applications.copy()
@@ -644,7 +700,7 @@ def render_seat_board():
         checkins = checkins[checkins['날짜'] == pd.Timestamp(seat_day)] if '날짜' in checkins.columns else checkins.iloc[0:0]
         if '교시' in checkins.columns:
             checkins = checkins[checkins['교시'].astype(str) == seat_period]
-        checkins['학번키'] = checkins.apply(normalize_student_id, axis=1)
+        checkins['학번키'] = checkins.apply(normalize_student_id, axis=1) if not checkins.empty else pd.Series(dtype=str)
         seat_col = find_seat_column(checkins.columns)
         seat_source = checkins[seat_col] if seat_col else pd.Series('', index=checkins.index)
         if seat_col:
@@ -696,7 +752,7 @@ def render_seat_board():
                 latest_time = parsed_times.max().strftime('%H:%M:%S')
         st.caption(
             f"마지막 원본 조회: {live_data.attrs.get('loaded_at', '-')} (한국시간) · "
-            f"선택 날짜·교시 최근 체크인: {latest_time} · 자동 갱신 1분"
+            f"선택 날짜·교시 최근 체크인: {latest_time} · 자동 확인 15초"
         )
 
         m1,m2,m3,m4 = st.columns(4)
@@ -922,10 +978,17 @@ def render_seat_board():
             map_payload = json.dumps(map_items, ensure_ascii=False).replace('</', '<\\/')
             room_title = f'{seat_floor} · {room_choice}'
             room_title_json = json.dumps(room_title, ensure_ascii=False)
+            from urllib.parse import urlencode
+            live_url_json = json.dumps('https://hyfl-dashboard-iv8bnq2wpu22yxhkwcvpga.streamlit.app/?' + urlencode({'board':'1', 'floor':seat_floor, 'room':room_choice, 'day':str(seat_day), 'period':seat_period}))
+            filter_key_json = json.dumps(f'seat-filter:{seat_day}:{seat_period}:{room_title}', ensure_ascii=False)
             component_html = f"""
             <!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1,minimum-scale=1,maximum-scale=5,user-scalable=yes'><style>
               *{{box-sizing:border-box}} body{{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic',sans-serif;background:white;color:#1e293b}}
-              .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:700px;min-width:0}}
+              .filters{{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px;font-size:12px}}
+              .filters button{{border:1px solid #cbd5e1;border-radius:8px;padding:8px 10px;background:white;cursor:pointer}}
+              .filters button[aria-pressed=true]{{background:#dbeafe;border-color:#2563eb;font-weight:700}}
+              .seat.dimmed{{opacity:.12}}
+              .wrap{{display:grid;grid-template-columns:minmax(0,1fr) 260px;gap:12px;height:655px;min-width:0}}
               .viewport{{position:relative;overflow:hidden;display:flex;align-items:flex-start;justify-content:center;min-width:0;min-height:0;padding:10px;background:#f8fafc;border:1px solid #dbe3ee;border-radius:14px;touch-action:pan-x pan-y pinch-zoom}}
               .stage{{position:relative;flex:none}}
               .canvas{{position:absolute;left:0;top:0;width:{board_width}px;height:{board_height}px;transform-origin:top left;background:#f8fafc}}
@@ -975,6 +1038,11 @@ def render_seat_board():
                 <span><i style='background:white;border:3px solid #ef4444'></i>자유석</span>
                 <span><i style='background:repeating-linear-gradient(135deg,#e2e8f0,#e2e8f0 4px,#fff 4px,#fff 8px);border:1px solid #94a3b8'></i>사용 불가</span>
               </div>
+              <div class='filters' role='group' aria-label='좌석 색상 필터'>
+                <button data-filter='all'>전체</button><button data-filter='missing'>🔴 지정석 비어 있음</button>
+                <button data-filter='checked'>🟢 체크인</button><button data-filter='mismatch'>🟠 불일치</button>
+                <span id='filterCount' aria-live='polite'></span>
+              </div>
               <div class='wrap'>
                 <div class='viewport' id='viewport'>
                   <div class='stage' id='stage'><div class='canvas' id='canvas'></div></div>
@@ -994,16 +1062,25 @@ def render_seat_board():
                 const safe=v=>String(v??'').replace(/[&<>\"']/g,m=>({{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}}[m]));
                 const standalone=window.top===window.self;
                 if(standalone){{document.body.classList.add('standalone');document.title='야자 감독 좌석판 · '+roomTitle;}}
-                document.getElementById('openBoard').onclick=()=>{{
-                  const fullPage=window.open('','_blank');
-                  if(!fullPage) return;
-                  const cleanDocument=document.documentElement.cloneNode(true);
-                  cleanDocument.querySelector('#canvas').innerHTML='';
-                  cleanDocument.querySelector('#panel').innerHTML='<div class="empty">좌석을 누르면<br>학생 정보가 표시됩니다.</div>';
-                  fullPage.document.open();
-                  fullPage.document.write('<!doctype html>'+cleanDocument.outerHTML);
-                  fullPage.document.close();
-                }};
+                document.getElementById('openBoard').onclick=()=>window.open({live_url_json},'_blank','noopener');
+                const storageKey={filter_key_json};
+                let saved={{}};
+                try{{saved=JSON.parse(localStorage.getItem(storageKey)||'{{}}');}}catch(_){{}}
+                let activeFilter=['all','missing','checked','mismatch'].includes(saved.filter)?saved.filter:'all';
+                let selectedSeat=saved.seat||'';
+                const remember=()=>{{try{{localStorage.setItem(storageKey,JSON.stringify({{filter:activeFilter,seat:selectedSeat}}));}}catch(_){{}}}};
+                const group=s=>s.status==='free-checked'?'checked':s.status==='free-mismatch'?'mismatch':s.status;
+                function applyFilter(){{
+                  let count=0;
+                  document.querySelectorAll('.seat').forEach(el=>{{
+                    const match=activeFilter==='all'||el.dataset.group===activeFilter;
+                    el.classList.toggle('dimmed',!match); if(match) count++;
+                  }});
+                  document.querySelectorAll('[data-filter]').forEach(el=>el.setAttribute('aria-pressed',String(el.dataset.filter===activeFilter)));
+                  document.getElementById('filterCount').textContent=count+'석';
+                  remember();
+                }}
+                document.querySelectorAll('[data-filter]').forEach(el=>el.onclick=()=>{{activeFilter=el.dataset.filter;applyFilter();}});
                 function fitBoard(){{
                   const styles=getComputedStyle(viewport);
                   const usableW=viewport.clientWidth-parseFloat(styles.paddingLeft)-parseFloat(styles.paddingRight);
@@ -1022,7 +1099,8 @@ def render_seat_board():
                 seats.forEach(s=>{{
                   const el=document.createElement('button'); el.className='seat '+s.status; el.style.left=s.x+'px'; el.style.top=s.y+'px';
                   el.innerHTML='<b>'+safe(s.seat)+'</b><span>'+safe(s.studentId||s.statusLabel)+'</span>';
-                  el.onclick=()=>{{document.querySelectorAll('.seat.active').forEach(x=>x.classList.remove('active'));el.classList.add('active');
+                  el.dataset.group=group(s);
+                  el.onclick=()=>{{selectedSeat=s.seat;remember();document.querySelectorAll('.seat.active').forEach(x=>x.classList.remove('active'));el.classList.add('active');
                     const person=(id,grade,classNo,number,name,emptyLabel)=>name ? `${{safe(grade)}}학년 ${{safe(classNo)}}반 ${{safe(number)}}번 ${{safe(name)}} (${{safe(id)}})` : emptyLabel;
                     const owner=person(s.ownerId,s.ownerGrade,s.ownerClass,s.ownerNumber,s.ownerName,s.seatType==='자유석'?'자유석':'배정 학생 없음');
                     const occupant=person(s.occupantId,s.occupantGrade,s.occupantClass,s.occupantNumber,s.occupantName,'체크인 학생 없음');
@@ -1030,8 +1108,9 @@ def render_seat_board():
                     <dt>좌석 주인</dt><dd>${{owner}}</dd><dt>좌석 주인 신청 요일</dt><dd>${{safe(s.ownerDays||'-')}}</dd><dt>좌석 주인 체크인 위치</dt><dd>${{safe(s.ownerActualSeat||'-')}}</dd>
                     <dt>실제 체크인 학생</dt><dd>${{occupant}}</dd><dt>실제 학생 신청 요일</dt><dd>${{safe(s.occupantDays||'-')}}</dd><dt>실제 학생 지정 좌석</dt><dd>${{safe(s.occupantAssignedSeat||'-')}}</dd>
                     <dt>체크인 좌석</dt><dd>${{safe(s.actualSeat||'-')}}</dd><dt>체크인 시각</dt><dd>${{safe(s.checkinTime||'-')}}</dd></dl>`;
-                  }}; canvas.appendChild(el);
+                  }}; canvas.appendChild(el); if(s.seat===selectedSeat) el.click();
                 }});
+                applyFilter();
                 new ResizeObserver(fitBoard).observe(viewport); fitBoard();
               </script></body></html>
             """
@@ -1039,6 +1118,9 @@ def render_seat_board():
 
 with tab_seat:
     render_seat_board()
+
+if board_only:
+    st.stop()
 
 # ══════════════════════════════════════════════════
 # TAB 1: 오늘 현황
